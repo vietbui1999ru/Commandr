@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# claim — atomically claim the next mission packet from the .agents/ bus inbox.
+#
+# Contract: SPEC v0.1 §4 (CLAIM-1..4), §3 (PACKET-1..3), §2 (LAYOUT-1..2).
+#   stdout on success:  claimed:{absolute-path}\n followed by packet contents, exit 0
+#   stdout on empty:    inbox:empty\n, exit 0 (empty inbox is not an error)
+#   stderr:             invalid-packet reports, missing-section flags, filesystem errors
+set -u
+
+# LAYOUT-1: the bus lives in the main checkout, resolved even from a worktree.
+main=$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)") || {
+  printf 'claim: not inside a git repository\n' >&2; exit 1; }
+main=$(cd "$main" && pwd -P) || exit 1
+bus="$main/.agents"
+inbox="$bus/inbox"
+claimed="$bus/claimed"
+
+# LAYOUT-2: required directories must exist before any bus operation.
+for d in "$inbox" "$claimed"; do
+  [ -d "$d" ] || { printf 'claim: bus not initialized, missing %s (LAYOUT-2)\n' "$d" >&2; exit 1; }
+done
+
+# CLAIM-2: '_' is the owner-identity separator; it cannot appear in an
+# RFC-1123 hostname, but sanitize anyway per spec.
+host=$(hostname | tr '_' '-')
+pid=$$
+
+# Print the value of a frontmatter field from the first ---/--- block.
+fm_field() { # fm_field <file> <key>
+  awk -v key="$2" '
+    NR==1 { if ($0 != "---") exit; next }
+    /^---[[:space:]]*$/ { exit }
+    index($0, key ":") == 1 {
+      val = substr($0, length(key) + 2)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      print val; exit
+    }' "$1"
+}
+
+for packet in "$inbox"/*.md; do
+  [ -e "$packet" ] || break
+
+  # PACKET-1: a packet missing id/type/scope is invalid — never claim, do report.
+  id=$(fm_field "$packet" id)
+  type=$(fm_field "$packet" type)
+  scope=$(fm_field "$packet" scope)
+  if [ -z "$id" ] || [ -z "$type" ] || [ -z "$scope" ]; then
+    printf 'claim: skipping %s — missing id/type/scope (PACKET-1)\n' "$(basename "$packet")" >&2
+    continue
+  fi
+
+  dest="$claimed/${host}_${pid}_$(basename "$packet")"
+  # CLAIM-1: the claim is this single rename; concurrent losers get ENOENT
+  # and move on to the next packet.
+  mv "$packet" "$dest" 2>/dev/null || continue
+
+  # PACKET-3: flag missing body sections; the claim itself stands (only
+  # PACKET-1 fields make a packet unclaimable).
+  for section in 'context' 'acceptance criteria' 'files to touch' 'do not touch'; do
+    grep -qi "^#.*${section}" "$dest" \
+      || printf 'claim: packet %s missing body section "%s" (PACKET-3)\n' "$id" "$section" >&2
+  done
+
+  # CLAIM-4: the task_claimed event exists before work begins. EVENT-6: one
+  # complete line per write.
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  agent=${AGENTS_AGENT_ID:-${host}_${pid}}
+  printf '{"ts":"%s","event":"task_claimed","task":"%s","agent":"%s","machine":"%s"}\n' \
+    "$ts" "$id" "$agent" "$host" >> "$bus/events.jsonl"
+
+  # CLAIM-3: claimed: line, then the packet contents.
+  printf 'claimed:%s\n' "$dest"
+  cat "$dest"
+  exit 0
+done
+
+# CLAIM-3: nothing claimable (empty, all invalid, or lost every race).
+printf 'inbox:empty\n'
+exit 0

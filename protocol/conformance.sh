@@ -4,7 +4,10 @@
 #
 # Modes:
 #   ./conformance.sh                  # test bus tools (claim/complete on PATH or via env)
-#   ./conformance.sh --adapter <cmd>  # drive a harness adapter through C03-C13 (TODO)
+#   ./conformance.sh --adapter <cmd>  # drive a harness adapter through C03-C13 (C13 drive TODO)
+#
+# Status: C01-C14 live except C09 (task_progress neutrality — needs an emitter;
+# adapters project progress, so this lands with Phase 1 adapter mode).
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
 #                GATE_CMD (default: pre-commit-gate)
@@ -147,16 +150,247 @@ for line in open(sys.argv[1]):
 PY
 }
 
-# --- TODO stubs ---------------------------------------------------------------
-c02() { skip "C02-packet"   "TODO: (a) packet missing id/type/scope must not be claimable (PACKET-1); (b) packet with unknown frontmatter field must still claim (PACKET-2); (c) packet missing required body sections flagged (PACKET-3)"; }
-c06() { skip "C06-claimevt" "TODO: task_claimed event exists after claim, before work (CLAIM-4)"; }
-c07() { skip "C07-complete" "TODO: complete moves to done/, prints done:<path>, exit 0; missing path exits non-zero AND produces no stdout (COMPLETE-1..2)"; }
+# --- C02 packet validation (PACKET-1..3) ---------------------------------------
+c02() {
+  local id="C02-packet"
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  rm -f .agents/inbox/*.md .agents/claimed/*.md
+  # (a) PACKET-1: missing scope — must not be claimable, SHOULD be reported
+  cat > .agents/inbox/BAD-C02.md <<'EOF'
+---
+id: BAD-C02
+type: implementation
+---
+# bad packet — no scope
+EOF
+  local out rc
+  out=$("$CLAIM_CMD" 2>c02.err); rc=$?
+  [ "$out" = "inbox:empty" ] && [ $rc -eq 0 ] \
+    || { bad "$id" "invalid packet claimable or claim errored: '$out' rc=$rc (PACKET-1)"; return; }
+  [ -f .agents/inbox/BAD-C02.md ] || { bad "$id" "invalid packet removed from inbox/ (PACKET-1)"; return; }
+  grep -q . c02.err || { bad "$id" "invalid packet not reported on stderr (PACKET-1)"; return; }
+  rm -f .agents/inbox/BAD-C02.md
+  # (b) PACKET-2: unknown frontmatter field must still claim
+  cat > .agents/inbox/TASK-C02.md <<'EOF'
+---
+id: TASK-C02
+type: implementation
+scope: src/**
+x-unknown-field: must be ignored
+---
+# TASK-C02
+## Context
+x
+## Acceptance criteria
+- [ ] none
+## Files to touch
+src/x
+## Do not touch
+docs/
+EOF
+  out=$("$CLAIM_CMD" 2>/dev/null)
+  case "$out" in
+    claimed:*) ;;
+    *) bad "$id" "unknown frontmatter field rejected (PACKET-2): '$out'"; return ;;
+  esac
+  # (c) PACKET-3: missing required body sections flagged (claim may still stand —
+  # only PACKET-1 fields make a packet unclaimable)
+  cat > .agents/inbox/TASK-C02B.md <<'EOF'
+---
+id: TASK-C02B
+type: implementation
+scope: src/**
+---
+# TASK-C02B — body has none of the required sections
+EOF
+  "$CLAIM_CMD" >/dev/null 2>c02b.err
+  grep -qi 'section' c02b.err \
+    && ok "$id" "PACKET-1 unclaimable+reported, PACKET-2 tolerated, PACKET-3 flagged" \
+    || bad "$id" "missing body sections not flagged on stderr (PACKET-3)"
+  rm -f c02.err c02b.err .agents/claimed/*.md
+}
+
+# --- C06 claim event invariant (CLAIM-4) ----------------------------------------
+c06() {
+  local id="C06-claimevt"
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  rm -f .agents/inbox/*.md .agents/claimed/*.md
+  make_packet TASK-C06
+  "$CLAIM_CMD" >/dev/null 2>&1 || { bad "$id" "claim failed"; return; }
+  # event exists after claim, before any work; keyed by task id (grep is
+  # key-order-agnostic: same line must carry both)
+  grep '"task_claimed"' .agents/events.jsonl 2>/dev/null | grep -q '"TASK-C06"' \
+    && ok "$id" "task_claimed event present after claim" \
+    || bad "$id" "no task_claimed event for TASK-C06 (CLAIM-4)"
+}
+
+# --- C07 complete (COMPLETE-1..2) -----------------------------------------------
+c07() {
+  local id="C07-complete"
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  have "$COMPLETE_CMD" || { skip "$id" "$COMPLETE_CMD not on PATH"; return; }
+  rm -f .agents/inbox/*.md .agents/claimed/*.md
+  make_packet TASK-C07
+  local out rc path base
+  out=$("$CLAIM_CMD" 2>/dev/null) || { bad "$id" "claim failed"; return; }
+  path=${out%%$'\n'*}; path=${path#claimed:}
+  base=$(basename "$path")
+  out=$("$COMPLETE_CMD" "$path"); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "complete exited $rc on success path (COMPLETE-1)"; return; }
+  [ "$out" = "done:$FIXTURE/.agents/done/$base" ] \
+    || { bad "$id" "stdout '$out', expected done:$FIXTURE/.agents/done/$base (COMPLETE-1)"; return; }
+  [ -f ".agents/done/$base" ] || { bad "$id" "claimed filename not preserved in done/ (COMPLETE-1)"; return; }
+  grep -e '"task_complete"' -e '"task_failed"' .agents/events.jsonl 2>/dev/null | grep -q '"TASK-C07"' \
+    || { bad "$id" "no completion event for TASK-C07 (COMPLETE-2)"; return; }
+  # missing claimed path: exit non-zero AND no stdout
+  out=$("$COMPLETE_CMD" ".agents/claimed/nohost_1_TASK-NONE.md" 2>/dev/null); rc=$?
+  [ $rc -ne 0 ] && [ -z "$out" ] \
+    && ok "$id" "move + done: line + exit 0; missing path non-zero and silent" \
+    || bad "$id" "missing path: rc=$rc stdout='$out' (COMPLETE-1)"
+}
 c09() { skip "C09-neutral"  "TODO: task_progress notes are harness-neutral (EVENT-4) — heuristic check"; }
-c10() { skip "C10-token"    "TODO: approval writes <task-id>.approved from frontmatter id; denial writes nothing (APPROVAL-1)"; }
-c11() { skip "C11-gate"     "TODO: pre-commit gate blocks commit without token; non-empty AGENTS_TASK_ID then exact-branch resolution (APPROVAL-2..3)"; }
-c12() { skip "C12-human"    "TODO: gate allows commit when no task identity resolves, warns when claimed/ non-empty (APPROVAL-4)"; }
-c13() { skip "C13-e2e"      "TODO: drive \${ADAPTER_CMD:-bus tools} through full lifecycle inbox->claimed->done with parseable log; assert no harness-private files under .agents/ (ADAPTER-2)"; }
-c14() { skip "C14-integrity" "TODO: (a) snapshot log, run lifecycle, verify prior lines byte-identical (EVENT-1); (b) inject unknown-event line, verify readers tolerate it (EVENT-3 reader side)"; }
+# --- C10 approval token semantics (APPROVAL-1, consumer side) -------------------
+# Writer side (interactive approval workflow writes the token; denial writes
+# nothing) is adapter/skill scope — verified in adapter mode, not testable here.
+c10() {
+  local id="C10-token"
+  have "$GATE_CMD" || { skip "$id" "$GATE_CMD not on PATH"; return; }
+  rm -f .agents/approvals/*.approved
+  # a filename-derived token MUST NOT satisfy the gate — tokens key on frontmatter id
+  : > ".agents/approvals/$(hostname | tr '_' '-')_999_TASK-C10.md.approved"
+  if AGENTS_TASK_ID=TASK-C10 "$GATE_CMD" >/dev/null 2>&1; then
+    bad "$id" "filename-derived token satisfied the gate (APPROVAL-1)"
+    rm -f .agents/approvals/*.approved; return
+  fi
+  : > .agents/approvals/TASK-C10.approved
+  AGENTS_TASK_ID=TASK-C10 "$GATE_CMD" >/dev/null 2>&1 \
+    && ok "$id" "token keyed by task id, never filename" \
+    || bad "$id" "id-keyed token did not satisfy the gate (APPROVAL-1)"
+  rm -f .agents/approvals/*.approved
+}
+
+# --- C11 gate blocks commit (APPROVAL-2..3) --------------------------------------
+c11() {
+  local id="C11-gate"
+  have "$GATE_CMD" || { skip "$id" "$GATE_CMD not on PATH"; return; }
+  local gate_abs; gate_abs=$(command -v "$GATE_CMD")
+  # APPROVAL-2: a real git pre-commit hook shelling to the gate on PATH
+  printf '#!/bin/sh\nexec %s\n' "$gate_abs" > .git/hooks/pre-commit
+  chmod +x .git/hooks/pre-commit
+  rm -f .agents/approvals/*.approved
+  git checkout -qb agent/TASK-C11
+  echo c11 > c11.txt && git add c11.txt
+  local commit="git -c user.email=conf@test -c user.name=conformance commit -qm c11"
+  c11_cleanup() {
+    git checkout -q main 2>/dev/null; git branch -qD agent/TASK-C11 2>/dev/null
+    rm -f .git/hooks/pre-commit .agents/approvals/*.approved c11.txt
+  }
+  # branch resolves agent/TASK-C11, no token -> blocked
+  if $commit >/dev/null 2>&1; then
+    bad "$id" "commit allowed without approval token (APPROVAL-3)"; c11_cleanup; return
+  fi
+  # whitespace-only AGENTS_TASK_ID is NOT a resolution -> branch still governs -> blocked
+  if AGENTS_TASK_ID='   ' $commit >/dev/null 2>&1; then
+    bad "$id" "whitespace-only AGENTS_TASK_ID treated as a resolution (APPROVAL-3)"; c11_cleanup; return
+  fi
+  # env wins over branch: branch token present, env task has none -> blocked
+  : > .agents/approvals/TASK-C11.approved
+  if AGENTS_TASK_ID=TASK-C11-ENV $commit >/dev/null 2>&1; then
+    bad "$id" "AGENTS_TASK_ID did not take priority over branch (APPROVAL-3)"; c11_cleanup; return
+  fi
+  # branch resolution + token -> allowed
+  if $commit >/dev/null 2>&1; then
+    ok "$id" "hook blocks without token; env-over-branch priority; whitespace env ignored"
+  else
+    bad "$id" "commit blocked despite approval token (APPROVAL-3)"
+  fi
+  c11_cleanup
+}
+
+# --- C12 gate allows humans (APPROVAL-4) -----------------------------------------
+c12() {
+  local id="C12-human"
+  have "$GATE_CMD" || { skip "$id" "$GATE_CMD not on PATH"; return; }
+  rm -f .agents/claimed/*.md .agents/approvals/*.approved
+  # no task identity, nothing claimed -> allow
+  env -u AGENTS_TASK_ID "$GATE_CMD" >/dev/null 2>&1 \
+    || { bad "$id" "human commit blocked with no task identity (APPROVAL-4)"; return; }
+  # no task identity, claimed/ non-empty -> still allow, but warn
+  printf 'placeholder\n' > ".agents/claimed/otherhost_1_TASK-C12.md"
+  local err rc
+  err=$(env -u AGENTS_TASK_ID "$GATE_CMD" 2>&1 >/dev/null); rc=$?
+  rm -f .agents/claimed/*.md
+  [ $rc -eq 0 ] || { bad "$id" "human commit blocked while claimed/ non-empty (APPROVAL-4)"; return; }
+  printf '%s' "$err" | grep -qi 'warn' \
+    && ok "$id" "allows humans; warns when agents have claims" \
+    || bad "$id" "no warning while claimed/ non-empty (APPROVAL-4)"
+}
+
+# --- C13 end-to-end lifecycle (full claim->done; ADAPTER-2) -----------------------
+c13() {
+  local id="C13-e2e"
+  if [ -n "$ADAPTER_CMD" ]; then
+    skip "$id" "TODO: drive adapter '$ADAPTER_CMD' through claim->progress->approval->complete"
+    return
+  fi
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  have "$COMPLETE_CMD" || { skip "$id" "$COMPLETE_CMD not on PATH"; return; }
+  rm -f .agents/inbox/*.md .agents/claimed/*.md
+  make_packet TASK-C13
+  local out path
+  out=$("$CLAIM_CMD" 2>/dev/null) || { bad "$id" "claim failed"; return; }
+  path=${out%%$'\n'*}; path=${path#claimed:}
+  "$COMPLETE_CMD" "$path" >/dev/null || { bad "$id" "complete failed"; return; }
+  ls .agents/claimed/*.md >/dev/null 2>&1 && { bad "$id" "packet left behind in claimed/"; return; }
+  ls .agents/done/*_TASK-C13.md >/dev/null 2>&1 || { bad "$id" "packet did not land in done/"; return; }
+  # log still parses end-to-end
+  if have python3; then
+    python3 - <<'PY' .agents/events.jsonl || { bad "$id" "event log unparseable after lifecycle"; return; }
+import json, sys
+for line in open(sys.argv[1]):
+    if line.strip(): json.loads(line)
+PY
+  fi
+  # ADAPTER-2: nothing harness-private under .agents/ — only the SPEC §2 entries
+  local f b
+  for f in .agents/* .agents/.[!.]*; do
+    [ -e "$f" ] || continue
+    b=$(basename "$f")
+    case "$b" in
+      inbox|claimed|done|approvals|council|events.jsonl|registry.json) ;;
+      *) bad "$id" "unexpected entry under .agents/: $b (ADAPTER-2)"; return ;;
+    esac
+  done
+  ok "$id" "inbox->claimed->done, parseable log, no harness-private files"
+}
+
+# --- C14 log integrity (EVENT-1; EVENT-3 reader side) ------------------------------
+c14() {
+  local id="C14-integrity"
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  have "$COMPLETE_CMD" || { skip "$id" "$COMPLETE_CMD not on PATH"; return; }
+  [ -f .agents/events.jsonl ] || { skip "$id" "no events.jsonl produced yet"; return; }
+  # (a) EVENT-1: a lifecycle only appends — prior bytes stay identical
+  cp .agents/events.jsonl c14.snapshot
+  rm -f .agents/inbox/*.md
+  make_packet TASK-C14A
+  local out path
+  out=$("$CLAIM_CMD" 2>/dev/null); path=${out%%$'\n'*}; path=${path#claimed:}
+  "$COMPLETE_CMD" "$path" >/dev/null 2>&1
+  head -c "$(wc -c < c14.snapshot | tr -d ' ')" .agents/events.jsonl | cmp -s - c14.snapshot \
+    || { bad "$id" "prior log bytes changed after lifecycle (EVENT-1)"; rm -f c14.snapshot; return; }
+  rm -f c14.snapshot
+  # (b) EVENT-3 reader side: tools must keep operating with a foreign/unknown
+  # event type in the log. (A true reader check lands with `index` in v0.2.)
+  printf '{"ts":"2026-01-01T00:00:00Z","event":"x_vendor_extension","note":"injected by conformance"}\n' \
+    >> .agents/events.jsonl
+  make_packet TASK-C14B
+  out=$("$CLAIM_CMD" 2>/dev/null) || { bad "$id" "claim broke on unknown event type (EVENT-3)"; return; }
+  path=${out%%$'\n'*}; path=${path#claimed:}
+  "$COMPLETE_CMD" "$path" >/dev/null 2>&1 \
+    && ok "$id" "append-only verified; tools tolerate unknown event types" \
+    || bad "$id" "complete broke on unknown event type (EVENT-3)"
+}
 
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14

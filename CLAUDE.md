@@ -11,7 +11,7 @@ Commandr is a multi-agent, multi-machine Claude Code command center. It provides
 - A human approval gate before agent commits
 - A council quality gate (3 parallel Haiku evaluators, majority vote)
 
-**Status**: Design phase complete + unification blueprint adopted (2026-06-09). Protocol SPEC v0.1 and a runnable conformance stub exist; no bin/ tools yet. This directory is NOT yet a git repository — `git init` + initial commit is the first task.
+**Status**: Phase 0 complete (2026-06-09) — conformance gate met: 13 pass, 0 fail, C09 skipped (needs a `task_progress` emitter — adapter scope, Phase 1). `bin/claim`, `bin/complete`, `bin/pre-commit-gate` implemented per SPEC v0.1. Next: Phase 1 dual adapters (CC + OpenCode). Run: `CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete GATE_CMD=$PWD/bin/pre-commit-gate protocol/conformance.sh`.
 
 ## Read These First (they supersede anything below that conflicts)
 

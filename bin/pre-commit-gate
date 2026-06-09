@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# pre-commit-gate — harness-independent human approval gate for agent commits.
+#
+# Contract: SPEC v0.1 §7 (APPROVAL-2..4). Installed per worktree as a git
+# pre-commit hook that shells to this tool on PATH:
+#   printf '#!/bin/sh\nexec pre-commit-gate\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#
+# Exit 0 allows the commit; non-zero blocks it. Depends on git + files only,
+# never on a harness being installed or running (APPROVAL-2).
+set -u
+
+# LAYOUT-1: the bus lives in the main checkout, resolved even from a worktree.
+main=$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)") || {
+  printf 'pre-commit-gate: not inside a git repository\n' >&2; exit 1; }
+main=$(cd "$main" && pwd -P) || exit 1
+bus="$main/.agents"
+
+# --- APPROVAL-3 resolution order ---------------------------------------------
+# (1) $AGENTS_TASK_ID, only if it contains any non-whitespace.
+task_env=""
+if [ -n "${AGENTS_TASK_ID:-}" ]; then
+  stripped=$(printf '%s' "$AGENTS_TASK_ID" | tr -d '[:space:]')
+  [ -n "$stripped" ] && task_env=$AGENTS_TASK_ID
+fi
+
+# (2) Current branch exactly `agent/<task-id>` (full string, case-sensitive).
+task_branch=""
+branch=$(git symbolic-ref --short -q HEAD || true)
+case "$branch" in
+  agent/?*) task_branch=${branch#agent/} ;;
+esac
+
+task=""
+if [ -n "$task_env" ]; then
+  task=$task_env
+  if [ -n "$task_branch" ] && [ "$task_branch" != "$task_env" ]; then
+    printf 'pre-commit-gate: warning: AGENTS_TASK_ID=%s disagrees with branch task %s — using AGENTS_TASK_ID (APPROVAL-3)\n' \
+      "$task_env" "$task_branch" >&2
+  fi
+elif [ -n "$task_branch" ]; then
+  task=$task_branch
+fi
+
+# --- APPROVAL-4: no task identity — humans share the repo ----------------------
+if [ -z "$task" ]; then
+  if [ -d "$bus/claimed" ] && find "$bus/claimed" -name '*.md' -type f 2>/dev/null | read -r _; then
+    printf 'pre-commit-gate: WARNING: agents have claimed tasks in %s/claimed/ but this commit has no task identity (set AGENTS_TASK_ID or use an agent/<task-id> branch); allowing as a human commit (APPROVAL-4)\n' \
+      "$bus" >&2
+  fi
+  exit 0
+fi
+
+# --- APPROVAL-1/3: task resolved — the token must exist ------------------------
+token="$bus/approvals/$task.approved"
+if [ -f "$token" ]; then
+  exit 0
+fi
+printf 'pre-commit-gate: BLOCKED: task %s has no approval token at %s — run the approval workflow before committing (APPROVAL-3)\n' \
+  "$task" "$token" >&2
+exit 1

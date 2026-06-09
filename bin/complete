@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# complete — move a claimed mission packet to done/ and record the landing.
+#
+# Contract: SPEC v0.1 §5 (COMPLETE-1..2).
+#   usage:   complete <claimed-path> [pass|fail]
+#   stdout:  done:{absolute-path}\n on success, exit 0
+#   failure: exit non-zero with NO stdout (errors go to stderr)
+#
+# `result` is normal-completion acceptance ("fail" = finished but acceptance
+# criteria unmet). Abnormal termination is task_failed, emitted by the
+# supervising party, never by this tool (COMPLETE-2).
+set -u
+
+if [ $# -lt 1 ]; then
+  printf 'usage: complete <claimed-path> [pass|fail]\n' >&2; exit 2
+fi
+path=$1
+result=${2:-pass}
+case "$result" in
+  pass|fail) ;;
+  *) printf 'complete: result must be "pass" or "fail", got "%s"\n' "$result" >&2; exit 2 ;;
+esac
+
+[ -f "$path" ] || { printf 'complete: no such claimed packet: %s\n' "$path" >&2; exit 1; }
+
+# The packet must actually live in a bus claimed/ directory; the bus root is
+# its grandparent. This keeps the tool independent of CWD (COMPLETE-1).
+dir=$(cd "$(dirname "$path")" && pwd -P) || exit 1
+case "$dir" in
+  */.agents/claimed) ;;
+  *) printf 'complete: %s is not under .agents/claimed/\n' "$path" >&2; exit 1 ;;
+esac
+bus=${dir%/claimed}
+
+base=$(basename "$path")
+dest="$bus/done/$base"
+[ -d "$bus/done" ] || { printf 'complete: missing %s/done (LAYOUT-2)\n' "$bus" >&2; exit 1; }
+
+# Events reference the frontmatter id, never the filename — read it before
+# the move so a parse failure leaves the packet claimed.
+id=$(awk '
+  NR==1 { if ($0 != "---") exit; next }
+  /^---[[:space:]]*$/ { exit }
+  index($0, "id:") == 1 {
+    val = substr($0, 4)
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+    print val; exit
+  }' "$path")
+[ -n "$id" ] || { printf 'complete: cannot read frontmatter id from %s\n' "$path" >&2; exit 1; }
+
+# COMPLETE-1: preserve the claimed filename through the move.
+mv "$path" "$dest" || exit 1
+
+# COMPLETE-2 + EVENT-6: one complete line per write.
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"ts":"%s","event":"task_complete","task":"%s","result":"%s"}\n' \
+  "$ts" "$id" "$result" >> "$bus/events.jsonl"
+
+printf 'done:%s\n' "$dest"
+exit 0
