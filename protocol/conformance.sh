@@ -4,9 +4,11 @@
 #
 # Modes:
 #   ./conformance.sh                  # test bus tools (claim/complete on PATH or via env)
-#   ./conformance.sh --adapter <cmd>  # drive a harness adapter through C03-C13 (C13 drive TODO)
+#   ./conformance.sh --adapter <cmd>  # also drive a harness adapter through C13
+#                                     # (driver verbs: capabilities, turn-end <dir>,
+#                                     #  session-end <dir> <sid> — see c13_adapter)
 #
-# Status: C01-C14 live (C09 tests the emitter; adapter-driven C13 drive TODO).
+# Status: C01-C14 live, including the adapter-mode C13 drive.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
 #                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress)
@@ -16,6 +18,7 @@ CLAIM_CMD=${CLAIM_CMD:-claim}
 COMPLETE_CMD=${COMPLETE_CMD:-complete}
 GATE_CMD=${GATE_CMD:-pre-commit-gate}
 PROGRESS_CMD=${PROGRESS_CMD:-progress}
+export PROGRESS_CMD   # adapters resolve their emitter through this in adapter mode
 ADAPTER_CMD=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -375,24 +378,75 @@ c12() {
     || bad "$id" "no warning while claimed/ non-empty (APPROVAL-4)"
 }
 
-# --- C13 end-to-end lifecycle (full claim->done; ADAPTER-2) -----------------------
-c13() {
+# --- C13 end-to-end lifecycle (full claim->done; ADAPTER-2; §8 in adapter mode) ----
+# Adapter mode drives a harness adapter through the lifecycle via a driver
+# command that translates neutral verbs into harness-specific hook firing:
+#   <driver> capabilities            -> supported verbs, one per line
+#   <driver> turn-end <dir>          -> simulate the harness's turn-end hook
+#   <driver> session-end <dir> <sid> -> simulate harness session shutdown
+# Conformance asserts bus effects only; how the driver fires its harness is
+# the adapter's business. session-end is optional (SPEC §8: "when the
+# harness supports exit hooks").
+c13_adapter() {
   local id="C13-e2e"
-  if [ -n "$ADAPTER_CMD" ]; then
-    skip "$id" "TODO: drive adapter '$ADAPTER_CMD' through claim->progress->approval->complete"
-    return
-  fi
   have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
   have "$COMPLETE_CMD" || { skip "$id" "$COMPLETE_CMD not on PATH"; return; }
+  # Hard requirement in adapter mode: without python3 the parse and EVENT-4
+  # checks would silently vanish, letting a malformed-but-grep-matching
+  # emitter pass the whole drive.
+  have python3 || { bad "$id" "python3 required for adapter-mode C13"; return; }
   rm -f .agents/inbox/*.md .agents/claimed/*.md
-  make_packet TASK-C13
-  local out path
+  make_packet TASK-C13A
+  local out path caps
   out=$("$CLAIM_CMD" 2>/dev/null) || { bad "$id" "claim failed"; return; }
   path=${out%%$'\n'*}; path=${path#claimed:}
+  # agent does some work, then the harness turn ends — twice, unchanged
+  echo work > c13a-work.txt
+  AGENTS_TASK_ID=TASK-C13A "$ADAPTER_CMD" turn-end "$FIXTURE" \
+    || { bad "$id" "driver turn-end failed"; return; }
+  AGENTS_TASK_ID=TASK-C13A "$ADAPTER_CMD" turn-end "$FIXTURE" \
+    || { bad "$id" "driver turn-end (repeat) failed"; return; }
+  grep '"task_progress"' .agents/events.jsonl 2>/dev/null | grep -q '"TASK-C13A"' \
+    || { bad "$id" "no task_progress projected after turn-end (SPEC §8)"; return; }
+  # work state changes -> the next turn end must eventually project it
+  echo more > c13a-work2.txt
+  AGENTS_TASK_ID=TASK-C13A "$ADAPTER_CMD" turn-end "$FIXTURE" \
+    || { bad "$id" "driver turn-end (after change) failed"; return; }
+  [ "$(grep '"task_progress"' .agents/events.jsonl | grep -c '"TASK-C13A"')" -ge 2 ] \
+    || { bad "$id" "changed work state not projected as a new milestone (SPEC §8)"; return; }
+  # EVENT-4 heuristic: adapter-produced notes carry no harness vocabulary
+  if have python3; then
+    python3 - <<'PY' .agents/events.jsonl || { bad "$id" "harness vocabulary in adapter note (EVENT-4)"; return; }
+import json, re, sys
+deny = re.compile(r'tool_use|tool call|token count|transcript|session_id|stop_hook|PostToolUse|PreToolUse', re.I)
+for line in open(sys.argv[1]):
+    if not line.strip(): continue
+    e = json.loads(line)
+    if e.get("event") == "task_progress" and e.get("task") == "TASK-C13A" \
+       and deny.search(e.get("note", "")):
+        sys.exit(1)
+PY
+  fi
   "$COMPLETE_CMD" "$path" >/dev/null || { bad "$id" "complete failed"; return; }
-  ls .agents/claimed/*.md >/dev/null 2>&1 && { bad "$id" "packet left behind in claimed/"; return; }
-  ls .agents/done/*_TASK-C13.md >/dev/null 2>&1 || { bad "$id" "packet did not land in done/"; return; }
-  # log still parses end-to-end
+  ls .agents/done/*_TASK-C13A.md >/dev/null 2>&1 || { bad "$id" "packet did not land in done/"; return; }
+  # session_end, where the harness has exit hooks
+  local note="adapter lifecycle: claim->progress->complete"
+  caps=$("$ADAPTER_CMD" capabilities 2>/dev/null) || caps=""
+  case "$caps" in
+    *session-end*)
+      "$ADAPTER_CMD" session-end "$FIXTURE" ses-c13 \
+        || { bad "$id" "driver session-end failed"; return; }
+      grep '"session_end"' .agents/events.jsonl 2>/dev/null | grep -q '"ses-c13"' \
+        || { bad "$id" "no session_end for ses-c13 (SPEC §8)"; return; }
+      note="$note->session_end" ;;
+    *) note="$note (session-end not supported by harness)" ;;
+  esac
+  c13_shared_asserts "$id" "$note"
+}
+
+# log parses + ADAPTER-2 dir scan — shared by both C13 modes
+c13_shared_asserts() { # c13_shared_asserts <id> <ok-note>
+  local id=$1 note=$2
   if have python3; then
     python3 - <<'PY' .agents/events.jsonl || { bad "$id" "event log unparseable after lifecycle"; return; }
 import json, sys
@@ -410,7 +464,39 @@ PY
       *) bad "$id" "unexpected entry under .agents/: $b (ADAPTER-2)"; return ;;
     esac
   done
-  ok "$id" "inbox->claimed->done, parseable log, no harness-private files"
+  # ...and nothing smuggled INSIDE the spec'd directories: no subdirectories,
+  # and every nested file must match its directory's content type.
+  local viol
+  viol=$(find .agents -mindepth 2 -type d 2>/dev/null | head -1)
+  [ -n "$viol" ] && { bad "$id" "unexpected directory under .agents/: $viol (ADAPTER-2)"; return; }
+  viol=$(find .agents -mindepth 2 -type f 2>/dev/null | while read -r p; do
+    case "$p" in
+      .agents/inbox/*.md|.agents/claimed/*.md|.agents/done/*.md) ;;
+      .agents/approvals/*.approved|.agents/council/*.json) ;;
+      *) printf '%s\n' "$p" ;;
+    esac
+  done | head -1)
+  [ -n "$viol" ] && { bad "$id" "unexpected file under .agents/: $viol (ADAPTER-2)"; return; }
+  ok "$id" "$note"
+}
+
+c13() {
+  local id="C13-e2e"
+  if [ -n "$ADAPTER_CMD" ]; then
+    c13_adapter
+    return
+  fi
+  have "$CLAIM_CMD" || { skip "$id" "$CLAIM_CMD not on PATH"; return; }
+  have "$COMPLETE_CMD" || { skip "$id" "$COMPLETE_CMD not on PATH"; return; }
+  rm -f .agents/inbox/*.md .agents/claimed/*.md
+  make_packet TASK-C13
+  local out path
+  out=$("$CLAIM_CMD" 2>/dev/null) || { bad "$id" "claim failed"; return; }
+  path=${out%%$'\n'*}; path=${path#claimed:}
+  "$COMPLETE_CMD" "$path" >/dev/null || { bad "$id" "complete failed"; return; }
+  ls .agents/claimed/*.md >/dev/null 2>&1 && { bad "$id" "packet left behind in claimed/"; return; }
+  ls .agents/done/*_TASK-C13.md >/dev/null 2>&1 || { bad "$id" "packet did not land in done/"; return; }
+  c13_shared_asserts "$id" "inbox->claimed->done, parseable log, no harness-private files"
 }
 
 # --- C14 log integrity (EVENT-1; EVENT-3 reader side) ------------------------------

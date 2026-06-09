@@ -135,7 +135,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
-Modes: `conformance.sh` (test bus tools alone) · `conformance.sh --adapter <cmd>` (drive a harness adapter through C03–C14; flag is parsed today, the driving harness in C13 is still TODO).
+Modes: `conformance.sh` (test bus tools alone) · `conformance.sh --adapter <cmd>` (additionally drives a harness adapter through the C13 lifecycle: claim → turn-end projections (§8, EVENT-4 heuristic) → complete → session_end where the harness supports exit hooks. Driver verbs: `capabilities`, `turn-end <dir>`, `session-end <dir> <sid>`).
 
 ## 11. Divergences from PRD v0.5
 
