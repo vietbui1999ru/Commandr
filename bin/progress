@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# progress — append a harness-neutral task_progress milestone to the bus event log.
+#
+# Contract: SPEC v0.1 §6 (EVENT-2, EVENT-4, EVENT-6), §2 (LAYOUT-1..2).
+#   usage:   progress <task-id> <note>
+#   note:    one line, non-empty; milestones only — never tool calls, token
+#            counts, or harness session structure (EVENT-4; adapters own this).
+#   exit:    0 on append; non-zero on validation or filesystem failure,
+#            in which case nothing is written.
+set -u
+
+usage() { printf 'usage: progress <task-id> <note>\n' >&2; exit 2; }
+[ $# -eq 2 ] || usage
+task=$1
+note=$2
+
+# Task id: non-empty, no whitespace (it keys filenames and tokens elsewhere).
+case "$task" in
+  '' | *[[:space:]]*) printf 'progress: invalid task id %s\n' "'$task'" >&2; exit 2 ;;
+esac
+
+# Note: non-empty after stripping, single line (EVENT-2/6: one complete JSON
+# object per line — an embedded newline would need escaping; reject instead
+# to keep notes milestone-shaped).
+stripped=$(printf '%s' "$note" | tr -d '[:space:]')
+[ -n "$stripped" ] || { printf 'progress: empty note\n' >&2; exit 2; }
+case "$note" in
+  *$'\n'*) printf 'progress: note must be a single line (EVENT-6)\n' >&2; exit 2 ;;
+esac
+
+# LAYOUT-1: the bus lives in the main checkout, resolved even from a worktree.
+main=$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)") || {
+  printf 'progress: not inside a git repository\n' >&2; exit 1; }
+main=$(cd "$main" && pwd -P) || exit 1
+bus="$main/.agents"
+[ -d "$bus" ] || { printf 'progress: bus not initialized, missing %s (LAYOUT-2)\n' "$bus" >&2; exit 1; }
+
+# JSON-escape the note: backslash first, then double quote (free text, unlike
+# the controlled ids elsewhere in bin/).
+esc=${note//\\/\\\\}
+esc=${esc//\"/\\\"}
+
+host=$(hostname | tr '_' '-')
+agent=${AGENTS_AGENT_ID:-${host}_$$}
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"ts":"%s","event":"task_progress","task":"%s","agent":"%s","note":"%s"}\n' \
+  "$ts" "$task" "$agent" "$esc" >> "$bus/events.jsonl"

@@ -6,16 +6,16 @@
 #   ./conformance.sh                  # test bus tools (claim/complete on PATH or via env)
 #   ./conformance.sh --adapter <cmd>  # drive a harness adapter through C03-C13 (C13 drive TODO)
 #
-# Status: C01-C14 live except C09 (task_progress neutrality — needs an emitter;
-# adapters project progress, so this lands with Phase 1 adapter mode).
+# Status: C01-C14 live (C09 tests the emitter; adapter-driven C13 drive TODO).
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
-#                GATE_CMD (default: pre-commit-gate)
+#                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress)
 set -u
 
 CLAIM_CMD=${CLAIM_CMD:-claim}
 COMPLETE_CMD=${COMPLETE_CMD:-complete}
 GATE_CMD=${GATE_CMD:-pre-commit-gate}
+PROGRESS_CMD=${PROGRESS_CMD:-progress}
 ADAPTER_CMD=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -248,7 +248,50 @@ c07() {
     && ok "$id" "move + done: line + exit 0; missing path non-zero and silent" \
     || bad "$id" "missing path: rc=$rc stdout='$out' (COMPLETE-1)"
 }
-c09() { skip "C09-neutral"  "TODO: task_progress notes are harness-neutral (EVENT-4) — heuristic check"; }
+# --- C09 progress neutrality (EVENT-4, heuristic) -------------------------------
+# Neutrality is not mechanically provable; this tests the testable subset:
+# event shape, single-line discipline, malformed-note rejection, and a
+# denylist scan for harness-vocabulary leakage in every task_progress note.
+c09() {
+  local id="C09-neutral"
+  have "$PROGRESS_CMD" || { skip "$id" "$PROGRESS_CMD not on PATH"; return; }
+  rm -f .agents/events.jsonl
+  # (a) valid one-line milestone note: exit 0, event appended with full shape
+  "$PROGRESS_CMD" TASK-C09 "acceptance criteria 2/4 done, parser implemented" \
+    || { bad "$id" "emitter failed on valid note"; return; }
+  local line
+  line=$(grep '"task_progress"' .agents/events.jsonl 2>/dev/null | grep '"TASK-C09"')
+  [ -n "$line" ] || { bad "$id" "no task_progress event for TASK-C09"; return; }
+  printf '%s\n' "$line" | python3 -c '
+import json, sys
+e = json.load(sys.stdin)
+assert e["event"] == "task_progress" and e["ts"] and e["task"] == "TASK-C09"
+assert isinstance(e["note"], str) and e["note"].strip() and "\n" not in e["note"]
+' 2>/dev/null || { bad "$id" "event shape invalid: $line"; return; }
+  # (b) multi-line note must be rejected: non-zero exit, nothing appended (§6 one-line)
+  local before after rc
+  before=$(wc -l < .agents/events.jsonl)
+  "$PROGRESS_CMD" TASK-C09 "line one
+line two" 2>/dev/null; rc=$?
+  after=$(wc -l < .agents/events.jsonl)
+  { [ $rc -ne 0 ] && [ "$before" = "$after" ]; } \
+    || { bad "$id" "multi-line note not rejected (rc=$rc, lines $before->$after)"; return; }
+  # (c) empty/whitespace note must be rejected
+  "$PROGRESS_CMD" TASK-C09 "   " 2>/dev/null \
+    && { bad "$id" "whitespace-only note accepted"; return; }
+  # (d) heuristic neutrality scan: no harness-internal vocabulary in any note
+  # (EVENT-4: no tool calls, token counts, or harness session structure)
+  python3 - <<'PY' .agents/events.jsonl || { bad "$id" "harness-internal vocabulary in a task_progress note (EVENT-4)"; return; }
+import json, re, sys
+deny = re.compile(r'tool_use|tool call|token count|transcript|session_id|stop_hook|PostToolUse|PreToolUse', re.I)
+for line in open(sys.argv[1]):
+    if not line.strip(): continue
+    e = json.loads(line)
+    if e.get("event") == "task_progress" and deny.search(e.get("note", "")):
+        sys.exit(1)
+PY
+  ok "$id" "shape valid, one-line enforced, malformed rejected, notes pass neutrality scan"
+}
 # --- C10 approval token semantics (APPROVAL-1, consumer side) -------------------
 # Writer side (interactive approval workflow writes the token; denial writes
 # nothing) is adapter/skill scope — verified in adapter mode, not testable here.
