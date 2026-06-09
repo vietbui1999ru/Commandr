@@ -1,0 +1,5 @@
+# .agents/ bus runtime state (SPEC v0.1 LAYOUT-3) — committed: inbox/*.md, done/*.md, .gitkeep
+.agents/claimed/
+.agents/approvals/
+.agents/events.jsonl
+.agents/council/
