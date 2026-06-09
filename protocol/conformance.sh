@@ -279,6 +279,12 @@ line two" 2>/dev/null; rc=$?
   # (c) empty/whitespace note must be rejected
   "$PROGRESS_CMD" TASK-C09 "   " 2>/dev/null \
     && { bad "$id" "whitespace-only note accepted"; return; }
+  # (c2) control characters in a note are invalid JSON bytes (EVENT-2)
+  "$PROGRESS_CMD" TASK-C09 "$(printf 'tab\there')" 2>/dev/null \
+    && { bad "$id" "control character in note accepted (EVENT-2)"; return; }
+  # (c3) a task id carrying JSON-special bytes must be rejected, not interpolated
+  "$PROGRESS_CMD" 'TASK"-C09' "valid note" 2>/dev/null \
+    && { bad "$id" "JSON-special byte in task id accepted (EVENT-2)"; return; }
   # (d) heuristic neutrality scan: no harness-internal vocabulary in any note
   # (EVENT-4: no tool calls, token counts, or harness session structure)
   python3 - <<'PY' .agents/events.jsonl || { bad "$id" "harness-internal vocabulary in a task_progress note (EVENT-4)"; return; }

@@ -62,11 +62,14 @@ for packet in "$inbox"/*.md; do
   done
 
   # CLAIM-4: the task_claimed event exists before work begins. EVENT-6: one
-  # complete line per write.
+  # complete line per write. id and agent are caller/file-supplied content —
+  # escape them so a stray quote cannot corrupt the log (EVENT-2).
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   agent=${AGENTS_AGENT_ID:-${host}_${pid}}
+  eid=${id//\\/\\\\};       eid=${eid//\"/\\\"}
+  eagent=${agent//\\/\\\\}; eagent=${eagent//\"/\\\"}
   printf '{"ts":"%s","event":"task_claimed","task":"%s","agent":"%s","machine":"%s"}\n' \
-    "$ts" "$id" "$agent" "$host" >> "$bus/events.jsonl"
+    "$ts" "$eid" "$eagent" "$host" >> "$bus/events.jsonl"
 
   # CLAIM-3: claimed: line, then the packet contents.
   printf 'claimed:%s\n' "$dest"

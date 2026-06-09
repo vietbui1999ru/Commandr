@@ -51,7 +51,10 @@ id=$(awk '
 # COMPLETE-1: preserve the claimed filename through the move.
 mv "$path" "$dest" || exit 1
 
-# COMPLETE-2 + EVENT-6: one complete line per write.
+# COMPLETE-2 + EVENT-6: one complete line per write. The id is frontmatter
+# content — escape it so a stray quote cannot corrupt the log (EVENT-2).
+id=${id//\\/\\\\}
+id=${id//\"/\\\"}
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"ts":"%s","event":"task_complete","task":"%s","result":"%s"}\n' \
   "$ts" "$id" "$result" >> "$bus/events.jsonl"

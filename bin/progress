@@ -14,19 +14,27 @@ usage() { printf 'usage: progress <task-id> <note>\n' >&2; exit 2; }
 task=$1
 note=$2
 
-# Task id: non-empty, no whitespace (it keys filenames and tokens elsewhere).
+# Task id: non-empty, no whitespace (it keys filenames and tokens elsewhere),
+# and no JSON-special or control bytes — the id is interpolated into the event
+# line, so a quote or backslash here would corrupt the log (EVENT-2).
 case "$task" in
-  '' | *[[:space:]]*) printf 'progress: invalid task id %s\n' "'$task'" >&2; exit 2 ;;
+  '' | *[[:space:]]* | *'"'* | *'\'*) printf 'progress: invalid task id %s\n' "'$task'" >&2; exit 2 ;;
 esac
+printf '%s' "$task" | LC_ALL=C grep -q '[[:cntrl:]]' \
+  && { printf 'progress: control character in task id\n' >&2; exit 2; }
 
-# Note: non-empty after stripping, single line (EVENT-2/6: one complete JSON
-# object per line — an embedded newline would need escaping; reject instead
-# to keep notes milestone-shaped).
+# Note: non-empty after stripping, single line, no control bytes (EVENT-2/6:
+# one complete JSON object per line; raw control characters are invalid JSON
+# and a tab or CR is not a milestone — reject rather than escape).
+# The newline needs its own check: grep is line-oriented, so an embedded
+# newline acts as a separator and never matches [[:cntrl:]].
 stripped=$(printf '%s' "$note" | tr -d '[:space:]')
 [ -n "$stripped" ] || { printf 'progress: empty note\n' >&2; exit 2; }
 case "$note" in
   *$'\n'*) printf 'progress: note must be a single line (EVENT-6)\n' >&2; exit 2 ;;
 esac
+printf '%s' "$note" | LC_ALL=C grep -q '[[:cntrl:]]' \
+  && { printf 'progress: note must not contain control characters (EVENT-2)\n' >&2; exit 2; }
 
 # LAYOUT-1: the bus lives in the main checkout, resolved even from a worktree.
 main=$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)") || {
@@ -42,6 +50,9 @@ esc=${esc//\"/\\\"}
 
 host=$(hostname | tr '_' '-')
 agent=${AGENTS_AGENT_ID:-${host}_$$}
+# Same escaping for the agent field — AGENTS_AGENT_ID is caller-supplied.
+agent=${agent//\\/\\\\}
+agent=${agent//\"/\\\"}
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"ts":"%s","event":"task_progress","task":"%s","agent":"%s","note":"%s"}\n' \
   "$ts" "$task" "$agent" "$esc" >> "$bus/events.jsonl"
