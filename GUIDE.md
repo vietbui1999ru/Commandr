@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-09 (Phase 2 complete — sidecar ingestion live in DiffViewer).
+Last updated: 2026-06-09 (Quality Gate CI live; Commandr pushed to GitHub; adapter conformance commands fixed to absolute driver paths).
 
 ## 1. What you are starting
 
@@ -173,9 +173,16 @@ CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
 GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
 protocol/conformance.sh
 
-# Adapter conformance (drives C13 through the driver verbs):
-protocol/conformance.sh --adapter adapters/claude-code/conformance-driver.sh
-protocol/conformance.sh --adapter adapters/opencode/conformance-driver.sh
+# Adapter conformance (drives C13 through the driver verbs).
+# Driver paths MUST be absolute — conformance.sh cd's into a throwaway
+# fixture repo, so relative paths fail with "No such file or directory":
+CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
+
+CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 ```
 
 Expected: 14 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
@@ -192,7 +199,9 @@ Expected: 14 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |
 | DiffViewer sidecar ingestion (both harnesses) | live at test level; live e2e not yet exercised | Phase 2 |
 | Adapters installed user-side (§3.3/3.4) | **pending** | — |
-| GitHub remotes (Commandr unpushed; DiffViewer ahead of origin) | **pending user decision** | — |
+| GitHub remote (Commandr → `vietbui1999ru/Commandr`, pushed) | live | 2026-06-09 |
+| DiffViewer remote (main ahead of origin, unpushed) | **pending user decision** | — |
+| Quality Gate CI (markdownlint loose, aislop, conformance ×3, Copilot review on PRs) | live — `.github/workflows/quality-gate.yml` | 2026-06-09 |
 | `bin/council`, `bin/index`, `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
 | llm-wiki sheds `claude-setup/` → dotfiles | not started (Phase 4) | — |
 | Tauri UI, multi-machine git-ref claims | not started (Phase 5) | — |

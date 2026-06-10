@@ -14,7 +14,10 @@
     "MD026": false, // trailing punctuation in headings
     "MD034": false, // bare URLs
     "MD007": false, // unordered list indentation
-    "MD029": false  // ordered list numbering style
+    "MD029": false, // ordered list numbering style
+    "MD022": false, // blanks around headings — compact docs
+    "MD031": false, // blanks around fenced code blocks
+    "MD032": false  // blanks around lists
   },
   "ignores": ["node_modules/**", ".agents/**", ".claude/**"]
 }

@@ -25,7 +25,7 @@ Toolchain unification per docs/UNIFICATION-BLUEPRINT.md. Phases 0–2 complete; 
 
 ## Blocked / Needs Input
 
-- GitHub remote decision — user call; Commandr unpushed, DiffViewer main now ahead of origin/main by ~30 commits (ff merge + v0.6).
+- ~~GitHub remote decision~~ RESOLVED for Commandr: pushed to `vietbui1999ru/Commandr`, Quality Gate CI live and green. Still open: DiffViewer main ahead of origin/main by ~30 commits (ff merge + v0.6) — push is user call.
 - Adapters not installed user-side: CC settings.json (Stop/SessionEnd + DiffViewer hooks via `DiffViewer/scripts/install.sh`), OpenCode symlinks (`commandr-checkpoint.js`, `diffviewer.js` → ~/.config/opencode/plugins/). Live end-to-end (real session → browser card) not yet exercised — Phase 2 gate proven at test level only.
 
 ## Files Modified This Session
