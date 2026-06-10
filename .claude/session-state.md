@@ -1,8 +1,8 @@
 # Session State
 
 status: active
-saved_at: 2026-06-10T02:19:36Z
-updated: 2026-06-10 02:19 UTC
+saved_at: 2026-06-10T13:35:00Z
+updated: 2026-06-10 13:35 UTC
 branch: main
 
 ## Goal
@@ -22,6 +22,12 @@ Toolchain unification per docs/UNIFICATION-BLUEPRINT.md. Phases 0–2 complete; 
   - Opus adversarial review caught + fixed: jq-failure → empty turn file blocker; startedAt mtime approximation; pruning placement; inFlight leak/collision.
   - Verified by me: 52/52 vitest, hooks + install bash suites pass.
 - User Q answered: DiffViewer has NO arch node view/edit, relationship mapping, diagram render/editor — arch panel is v1 paper, visual graph v2 paper, editing nowhere.
+- **Mobile companion MVP-0** (DiffViewer `c1d16b9`, 2026-06-10) — issue #1 first slice shipped (test+smoke level).
+  - Grilled 4 forks before building: scope=approval-loop-only; transport=**Tailscale-only + single shared token** (rejected the rev2 bespoke ECDH/JWT/PoP stack — that solved bare-LAN-no-TLS, out of scope); daemon=extend DiffViewer server; client=PWA pull-tool.
+  - Spec `DiffViewer/docs/MVP0-MOBILE-SPEC.md` rev3. Codex council review (note: rule's `gpt-5.3-codex` is dead on this account → used `gpt-5.5`) + opus security audit, both folded in.
+  - Surface: loopback `:3334` listener on the DiffViewer server (`--mobile`/`--pair`), `src/mobile/{auth,approvals,wsHub,index}.js`, PWA `browser-mobile/`. approve writes `.agents/approvals/<id>.approved`, reject writes nothing (APPROVAL-1). Stale-diff digest guard (digest binds task), task non-null-and-equal, symlink-hardened O_EXCL write, WS first-frame token auth. Prereq fixes: sidecarWatcher propagates `task`; stop.sh resolves task id.
+  - Verified by me: 14 files/112 vitest, hooks+install bash suites, live smoke (loopback-only bind, PWA served, 401/401/409 auth+digest). 60 new tests.
+  - Deferred to MVP-1+: Kanban, voice/chat capture, GitHub proxy, native push, per-device tokens.
 
 ## Blocked / Needs Input
 
