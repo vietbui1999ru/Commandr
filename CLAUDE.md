@@ -18,6 +18,7 @@ Commandr is a multi-agent, multi-machine Claude Code command center. It provides
 1. `docs/UNIFICATION-BLUEPRINT.md` — Commandr's adopted identity: the L3 **bus** (thin waist) of a 5-layer toolchain. 11 locked decisions — do NOT re-grill them.
 2. `protocol/SPEC.md` — the `.agents/` bus contract v0.1. **Wins over PRD v0.5, ARCHITECTURE.md, and this file** for cross-harness behavior (declared divergences in SPEC §11).
 3. `protocol/conformance.sh` — definition of done for bus tools and every harness adapter. Runs today: C01 passes, C02–C14 are TODO stubs with exact assertions spelled out.
+4. `GUIDE.md` — operator workflow guide (how to start/run the toolchain). **Living doc: update it in the same session as any change to `bin/`, `protocol/`, `adapters/`, or the DiffViewer ingestion contract, and refresh its "Current feature state" table.**
 
 Key supersessions to not trip over: claimed-filename separator is `_` not `-` (SPEC §11.4 — dash parsing is ambiguous); claim/complete/pre-commit-gate live in Commandr `bin/` on PATH, not per-project `scripts/` (SPEC §11.2); council verdict is one `.agents/council/<task-id>.json` per task (SPEC §9).
 
