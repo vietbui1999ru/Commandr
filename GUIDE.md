@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-09 (Quality Gate CI live; Commandr pushed to GitHub; adapter conformance commands fixed to absolute driver paths).
+Last updated: 2026-06-10 (conformance now fails closed on any skip — a misconfigured run can no longer report green; CLAUDE.md doc drift corrected).
 
 ## 1. What you are starting
 
@@ -193,7 +193,7 @@ Expected: 14 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Capability | Status | Since |
 |---|---|---|
 | Bus tools (`claim`/`complete`/`progress`/`pre-commit-gate`) | live, SPEC v0.1 | Phase 0 |
-| Conformance C01–C14 incl. `--adapter` drive | live | Phase 1 |
+| Conformance C01–C14 incl. `--adapter` drive | live; fails closed on any skip (0 stubs remain) | Phase 1 |
 | CC adapter (turn checkpoint + `session_end`) | live | Phase 1 |
 | OC adapter (turn checkpoint via idle) | live | Phase 1 |
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |

@@ -529,5 +529,8 @@ c14() {
 
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14
-printf '\n%d passed, %d failed, %d skipped (stubs)\n' "$PASS" "$FAIL" "$SKIP"
-[ "$FAIL" -eq 0 ] || exit 1
+printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
+# All 14 cases are live (0 stubs). A skip means a tool was missing from PATH or a
+# prerequisite failed — a misconfigured run, not a pass. Fail closed so a fully
+# skipped run can never report green (0 passed / 0 failed must not exit 0).
+[ "$FAIL" -eq 0 ] && [ "$SKIP" -eq 0 ] && [ "$PASS" -gt 0 ] || exit 1
