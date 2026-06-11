@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# council — advisory quality gate: 3 evaluators in parallel, majority vote, one verdict file.
+#
+# Contract: SPEC v0.2 §12 (COUNCIL-1..11).
+#   usage:   council <claimed-or-done-path>
+#   stdout:  council:{task-id}:{PASS|FAIL}\n on normal completion, exit 0
+#            (a FAIL verdict is a normal outcome, not an error)
+#   exit 1:  runtime error (bus unresolvable, packet unreadable, verdict write failed);
+#            the verdict file is never left partially written.
+#   exit 2:  usage error (wrong arg count; packet not under .agents/claimed|done).
+#
+# Advisory (COUNCIL-1): never touches .agents/approvals/; the human git gate (§7)
+# is authoritative. Evaluator seam (COUNCIL-4..6): COUNCIL_EVALUATOR_CMD, invoked
+# three times in parallel as `$COUNCIL_EVALUATOR_CMD <prompt-file> <dimension>`; a
+# valid vote is exit 0 + a stdout line `VOTE: PASS` or `VOTE: FAIL`, optional next
+# line `REASON: <text>`. Any other outcome is recorded ABSTAIN. Unset/empty falls
+# back to the built-in Haiku evaluator.
+set -u
+
+usage() { printf 'usage: council <claimed-or-done-path>\n' >&2; exit 2; }
+[ $# -eq 1 ] || usage
+path=$1
+
+[ -f "$path" ] || { printf 'council: no such packet: %s\n' "$path" >&2; exit 1; }
+
+# COUNCIL-2: resolve the bus as the grandparent of the packet's directory, so the
+# tool is independent of CWD and of any harness. The packet must live in the bus.
+dir=$(cd "$(dirname "$path")" && pwd -P) || exit 1
+case "$dir" in
+  */.agents/claimed | */.agents/done) ;;
+  *) printf 'council: %s is not under .agents/claimed|done\n' "$path" >&2; exit 2 ;;
+esac
+bus=${dir%/*}
+
+# COUNCIL-3: task id is the frontmatter id, never the filename (same reader as complete).
+id=$(awk '
+  NR==1 { if ($0 != "---") exit; next }
+  /^---[[:space:]]*$/ { exit }
+  index($0, "id:") == 1 {
+    val = substr($0, 4)
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+    print val; exit
+  }' "$path")
+[ -n "$id" ] || { printf 'council: cannot read frontmatter id from %s\n' "$path" >&2; exit 1; }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/council.XXXXXX") || exit 1
+trap 'rm -rf "$work"' EXIT
+
+# The prompt file handed to each evaluator. Content is an implementation detail
+# (COUNCIL-5 fixes only the argv shape); stubs ignore it. The built-in evaluator
+# reads it. Include the packet plus the committed diff for the work, if resolvable.
+prompt="$work/prompt.txt"
+{
+  cat "$path"
+  printf '\n--- diff ---\n'
+  ( cd "$bus/.." && git diff HEAD~1 -- . 2>/dev/null ) || true
+} > "$prompt"
+
+evaluator=${COUNCIL_EVALUATOR_CMD:-}
+
+# Built-in default: ask the Claude Code CLI. Absent (COUNCIL-2 default has no harness)
+# → non-zero, which becomes ABSTAIN downstream (fail-safe).
+builtin_eval() {
+  command -v claude >/dev/null 2>&1 || return 1
+  claude -p "$(cat "$1")
+Evaluate ONLY the '$2' dimension of this work. Reply with exactly one line, either
+'VOTE: PASS' or 'VOTE: FAIL', optionally followed by a line 'REASON: <one line>'." 2>/dev/null
+}
+
+run_one() { # run_one <prompt-file> <dimension>
+  if [ -n "$evaluator" ]; then "$evaluator" "$1" "$2"; else builtin_eval "$1" "$2"; fi
+}
+
+# COUNCIL-5: exactly three dimensions, in parallel.
+dims="acceptance-criteria code-quality style"
+pids=""
+for dim in $dims; do
+  run_one "$prompt" "$dim" > "$work/out.$dim" 2>/dev/null &
+  pids="$pids $!:$dim"
+done
+for pd in $pids; do
+  pid=${pd%%:*}; dim=${pd#*:}
+  if wait "$pid"; then echo 0 > "$work/ec.$dim"; else echo 1 > "$work/ec.$dim"; fi
+done
+
+# Tally votes in dimension order; build the votes[] JSON.
+pass=0; abstain=0; votes=""
+json_esc() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "$s"; }
+for dim in $dims; do
+  ec=$(cat "$work/ec.$dim" 2>/dev/null || echo 1)
+  vote="ABSTAIN"; reason=""
+  if [ "$ec" -eq 0 ]; then
+    # COUNCIL-5: valid vote = exit 0 AND a clean `VOTE: PASS|FAIL` line.
+    v=$(grep -m1 -E '^VOTE: (PASS|FAIL)$' "$work/out.$dim" 2>/dev/null | awk '{print $2}')
+    if [ -n "$v" ]; then
+      vote=$v
+      reason=$(grep -m1 '^REASON: ' "$work/out.$dim" 2>/dev/null | sed 's/^REASON: //' | tr -d '[:cntrl:]')
+    fi
+  fi
+  case "$vote" in
+    PASS) pass=$((pass+1)) ;;
+    ABSTAIN) abstain=$((abstain+1)) ;;
+  esac
+  entry=$(printf '{"dimension":"%s","vote":"%s","reason":"%s"}' \
+    "$dim" "$vote" "$(json_esc "$reason")")
+  votes="${votes:+$votes,}$entry"
+done
+
+# COUNCIL-8: PASS iff at least two PASS votes; ties and all-abstain fail-safe to FAIL.
+if [ "$pass" -ge 2 ]; then verdict="PASS"; else verdict="FAIL"; fi
+
+id_esc=$(json_esc "$id")
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# COUNCIL-9: exactly one verdict file, written atomically (temp on the same fs, then mv).
+mkdir -p "$bus/council" || { printf 'council: cannot create %s/council\n' "$bus" >&2; exit 1; }
+tmp="$bus/council/.$$.tmp"
+printf '{"task":"%s","verdict":"%s","ts":"%s","votes":[%s]}\n' \
+  "$id_esc" "$verdict" "$ts" "$votes" > "$tmp" || { rm -f "$tmp"; exit 1; }
+mv "$tmp" "$bus/council/$id.json" || { rm -f "$tmp"; exit 1; }
+
+# COUNCIL-11: one council_verdict event, after the file and before stdout.
+printf '{"ts":"%s","event":"council_verdict","task":"%s","verdict":"%s","evaluator_count":3,"abstentions":%d}\n' \
+  "$ts" "$id_esc" "$verdict" "$abstain" >> "$bus/events.jsonl"
+
+printf 'council:%s:%s\n' "$id" "$verdict"
+exit 0

@@ -8,16 +8,18 @@
 #                                     # (driver verbs: capabilities, turn-end <dir>,
 #                                     #  session-end <dir> <sid> — see c13_adapter)
 #
-# Status: C01-C14 live, including the adapter-mode C13 drive.
+# Status: C01-C20 live, including the adapter-mode C13 drive and the §12 council gate.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
-#                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress)
+#                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress),
+#                COUNCIL_CMD (default: council)
 set -u
 
 CLAIM_CMD=${CLAIM_CMD:-claim}
 COMPLETE_CMD=${COMPLETE_CMD:-complete}
 GATE_CMD=${GATE_CMD:-pre-commit-gate}
 PROGRESS_CMD=${PROGRESS_CMD:-progress}
+COUNCIL_CMD=${COUNCIL_CMD:-council}
 export PROGRESS_CMD   # adapters resolve their emitter through this in adapter mode
 ADAPTER_CMD=""
 while [ $# -gt 0 ]; do
@@ -62,6 +64,40 @@ src/x
 ## Do not touch
 docs/
 EOF
+}
+
+# Deterministic council evaluator stubs (the §12.2 testability seam). Each is a
+# command invoked as `<stub> <prompt-file> <dimension>`; none spends a token.
+council_stubs() { # -> echoes the stub dir
+  local d="$FIXTURE/stubs"
+  [ -x "$d/pass" ] && { printf '%s' "$d"; return; }
+  mkdir -p "$d"
+  printf '#!/usr/bin/env bash\necho "VOTE: PASS"; echo "REASON: stub"\n'  > "$d/pass"
+  printf '#!/usr/bin/env bash\necho "VOTE: FAIL"; echo "REASON: stub"\n'  > "$d/fail"
+  printf '#!/usr/bin/env bash\nexit 1\n'                                  > "$d/crash"
+  printf '#!/usr/bin/env bash\nexit 0\n'                                  > "$d/silent"
+  printf '#!/usr/bin/env bash\ncase "$2" in style) echo "VOTE: FAIL";; *) echo "VOTE: PASS";; esac\n' > "$d/2p1f"
+  printf '#!/usr/bin/env bash\ncase "$2" in acceptance-criteria) echo "VOTE: PASS";; *) echo "VOTE: FAIL";; esac\n' > "$d/1p2f"
+  chmod +x "$d"/*
+  printf '%s' "$d"
+}
+
+# A landed (done/) packet for council to evaluate, with a claimed-style filename.
+council_packet() { # council_packet <task-id>  -> echoes relative done path
+  local id=$1 p=".agents/done/host_1_$id.md"
+  cat > "$p" <<EOF
+---
+id: $id
+type: implementation
+scope: src/**
+---
+# $id
+## Context
+Council fixture.
+## Acceptance criteria
+- [ ] none
+EOF
+  printf '%s' "$p"
 }
 
 # --- C01 layout (LAYOUT-1..3) ------------------------------------------------
@@ -527,8 +563,108 @@ c14() {
     || bad "$id" "complete broke on unknown event type (EVENT-3)"
 }
 
+c15() { # COUNCIL-1..5, 9..11: happy path, file shape, event
+  local id="C15-council-happy"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local d p out rc f; d=$(council_stubs); p=$(council_packet TASK-C15)
+  out=$(COUNCIL_EVALUATOR_CMD="$d/pass" "$COUNCIL_CMD" "$p"); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "exit $rc on happy path (COUNCIL-1)"; return; }
+  [ "$out" = "council:TASK-C15:PASS" ] || { bad "$id" "stdout '$out' (§12.1)"; return; }
+  f=".agents/council/TASK-C15.json"
+  [ -f "$f" ] || { bad "$id" "no verdict file (COUNCIL-9)"; return; }
+  python3 - "$f" <<'PY' || { bad "$id" "verdict file shape (COUNCIL-10)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert set(d)=={"task","verdict","ts","votes"}, d.keys()              # exactly these fields (decision-4 fence)
+assert d["task"]=="TASK-C15" and d["verdict"]=="PASS"
+assert len(d["votes"])==3
+assert {v["dimension"] for v in d["votes"]}=={"acceptance-criteria","code-quality","style"}
+assert all(set(v)=={"dimension","vote","reason"} and v["vote"]=="PASS" for v in d["votes"])
+PY
+  # COUNCIL-7: no leftover prompt temp dirs from this run
+  grep '"event":"council_verdict"' .agents/events.jsonl | grep '"TASK-C15"' | grep -q '"evaluator_count":3' \
+    && ok "$id" "3 PASS -> PASS; {task,verdict,ts,votes} shape; council_verdict event" \
+    || bad "$id" "missing/!=3-evaluator council_verdict event for TASK-C15 (COUNCIL-11)"
+}
+
+c16() { # COUNCIL-8: majority math
+  local id="C16-council-majority"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  local d; d=$(council_stubs)
+  [ "$(COUNCIL_EVALUATOR_CMD="$d/2p1f" "$COUNCIL_CMD" "$(council_packet TASK-C16A)")" = "council:TASK-C16A:PASS" ] \
+    || { bad "$id" "2-1 must be PASS (COUNCIL-8)"; return; }
+  [ "$(COUNCIL_EVALUATOR_CMD="$d/1p2f" "$COUNCIL_CMD" "$(council_packet TASK-C16B)")" = "council:TASK-C16B:FAIL" ] \
+    || { bad "$id" "1-2 must be FAIL (COUNCIL-8)"; return; }
+  [ "$(COUNCIL_EVALUATOR_CMD="$d/fail" "$COUNCIL_CMD" "$(council_packet TASK-C16C)")" = "council:TASK-C16C:FAIL" ] \
+    && ok "$id" "2-1 PASS; 1-2 FAIL; 0-3 FAIL (COUNCIL-8)" \
+    || bad "$id" "0-3 must be FAIL (COUNCIL-8)"
+}
+
+c17() { # COUNCIL-6, 8: abstentions are fail-safe
+  local id="C17-council-abstain"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  local d p out n; d=$(council_stubs)
+  for st in crash silent; do
+    p=$(council_packet "TASK-C17-$st")
+    out=$(COUNCIL_EVALUATOR_CMD="$d/$st" "$COUNCIL_CMD" "$p") || { bad "$id" "$st run errored"; return; }
+    [ "$out" = "council:TASK-C17-$st:FAIL" ] || { bad "$id" "$st must FAIL via ABSTAIN (COUNCIL-6/8)"; return; }
+    n=$(grep -o '"vote":"ABSTAIN"' ".agents/council/TASK-C17-$st.json" | wc -l | tr -d ' ')
+    [ "$n" = "3" ] || { bad "$id" "$st: expected 3 ABSTAIN votes, got $n (COUNCIL-6)"; return; }
+    grep '"TASK-C17-'"$st"'"' .agents/events.jsonl | grep -q '"abstentions":3' \
+      || { bad "$id" "$st: event must report abstentions:3 (COUNCIL-11)"; return; }
+  done
+  ok "$id" "crash + silent evaluators -> 3 ABSTAIN -> FAIL; abstentions:3 in event"
+}
+
+c18() { # COUNCIL-9: idempotent re-run overwrites; events append
+  local id="C18-council-overwrite"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  local d p f n; d=$(council_stubs); p=$(council_packet TASK-C18); f=".agents/council/TASK-C18.json"
+  COUNCIL_EVALUATOR_CMD="$d/pass" "$COUNCIL_CMD" "$p" >/dev/null || { bad "$id" "first run failed"; return; }
+  grep -q '"verdict":"PASS"' "$f" || { bad "$id" "first run not PASS"; return; }
+  COUNCIL_EVALUATOR_CMD="$d/fail" "$COUNCIL_CMD" "$p" >/dev/null || { bad "$id" "second run failed"; return; }
+  grep -q '"verdict":"FAIL"' "$f" && ! grep -q '"verdict":"PASS"' "$f" \
+    || { bad "$id" "verdict file not overwritten to FAIL (COUNCIL-9)"; return; }
+  n=$(grep '"event":"council_verdict"' .agents/events.jsonl | grep -c '"TASK-C18"')
+  [ "$n" -eq 2 ] \
+    && ok "$id" "re-run overwrites verdict; two council_verdict events (COUNCIL-9, EVENT-1)" \
+    || bad "$id" "expected 2 council_verdict events for TASK-C18, got $n"
+}
+
+c19() { # COUNCIL-2, 3: CWD-independent; verdict + event land in the bus, not cwd
+  local id="C19-council-bus-resolution"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  local d p abs elsewhere out; d=$(council_stubs); p=$(council_packet TASK-C19)
+  abs="$FIXTURE/$p"; elsewhere=$(mktemp -d "${TMPDIR:-/tmp}/council-cwd.XXXXXX")
+  out=$(cd "$elsewhere" && COUNCIL_EVALUATOR_CMD="$d/pass" "$COUNCIL_CMD" "$abs"); local rc=$?
+  rm -rf "$elsewhere"
+  [ $rc -eq 0 ] && [ "$out" = "council:TASK-C19:PASS" ] || { bad "$id" "rc=$rc out='$out' from foreign cwd (COUNCIL-2)"; return; }
+  [ -f "$FIXTURE/.agents/council/TASK-C19.json" ] || { bad "$id" "verdict not written to the bus (COUNCIL-2)"; return; }
+  grep '"TASK-C19"' "$FIXTURE/.agents/events.jsonl" | grep -q '"event":"council_verdict"' \
+    && ok "$id" "resolves bus from packet path, not CWD; verdict + event land in main checkout" \
+    || bad "$id" "council_verdict event not in the bus log (COUNCIL-2)"
+}
+
+c20() { # COUNCIL-2: harness-independent — the seam means the harness is never invoked
+  local id="C20-council-harness-independence"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  local d p out pd; d=$(council_stubs); p=$(council_packet TASK-C20)
+  # A poisoned `claude` that records if it is ever executed. With the evaluator
+  # seam set, council MUST NOT fall back to the built-in harness evaluator.
+  pd="$FIXTURE/poison"; mkdir -p "$pd"
+  printf '#!/usr/bin/env bash\ntouch "%s/claude-was-called"\necho "VOTE: PASS"\n' "$FIXTURE" > "$pd/claude"
+  chmod +x "$pd/claude"; rm -f "$FIXTURE/claude-was-called"
+  out=$(PATH="$pd:$PATH" COUNCIL_EVALUATOR_CMD="$d/pass" "$COUNCIL_CMD" "$p"); local rc=$?
+  [ $rc -eq 0 ] && [ "$out" = "council:TASK-C20:PASS" ] || { bad "$id" "rc=$rc out='$out'"; return; }
+  [ ! -f "$FIXTURE/claude-was-called" ] \
+    && ok "$id" "verdict produced via the seam; harness never invoked (COUNCIL-2)" \
+    || bad "$id" "council invoked the harness despite COUNCIL_EVALUATOR_CMD (COUNCIL-2)"
+}
+
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14
+c15; c16; c17; c18; c19; c20
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 # All 14 cases are live (0 stubs). A skip means a tool was missing from PATH or a
 # prerequisite failed — a misconfigured run, not a pass. Fail closed so a fully
