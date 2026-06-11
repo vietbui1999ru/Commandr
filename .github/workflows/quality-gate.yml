@@ -38,20 +38,23 @@ jobs:
         run: |
           git config --global user.email "ci@commandr.invalid"
           git config --global user.name "Commandr CI"
-      - name: Bus tools conformance (SPEC v0.1, C01-C14)
+      - name: Bus tools conformance (SPEC v0.1+v0.2, C01-C20)
         run: |
           CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
           GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+          COUNCIL_CMD=$PWD/bin/council \
           protocol/conformance.sh
       - name: Claude Code adapter conformance (C13 drive)
         run: |
           CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
           GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+          COUNCIL_CMD=$PWD/bin/council \
           protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
       - name: OpenCode adapter conformance (C13 drive)
         run: |
           CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
           GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+          COUNCIL_CMD=$PWD/bin/council \
           protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 
   copilot-review:

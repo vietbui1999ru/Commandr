@@ -1,9 +1,10 @@
-# `.agents/` Bus Protocol — SPEC v0.1 (draft)
+# `.agents/` Bus Protocol — SPEC v0.2 (draft)
 
 The thin-waist contract for cross-harness agent coordination. Any driver harness (Claude Code, OpenCode, Codex, Pi), worker, UI, or human tooling interoperates with the bus exclusively through the on-disk formats defined here.
 
 **Scope (v0.1):** task queue + neutral progress + approvals + events. Single machine, single repo.
-**Out of scope (v0.1):** multi-machine claiming (git-ref race, reserved), agent registry, council verdict aggregation (namespace reserved), dependency scheduling, timeout recovery, Windows.
+**Added in v0.2:** the council quality gate (§12) — `bin/council`, the `council_verdict` event, and conformance C15–C20.
+**Out of scope:** multi-machine claiming (git-ref race, reserved), agent registry, dependency scheduling, timeout recovery, Windows.
 
 Normative keywords MUST / MUST NOT / SHOULD / MAY follow RFC 2119. Every MUST has a conformance check ID (§10).
 
@@ -79,6 +80,7 @@ Defined events:
 {"ts": "<ISO8601>", "event": "task_complete", "task": "<task-id>", "result": "pass" | "fail"}
 {"ts": "<ISO8601>", "event": "task_failed",   "task": "<task-id>", "agent": "<agent-id>", "reason": "<description>"}
 {"ts": "<ISO8601>", "event": "session_end",   "session": "<session-id>", "task?": "<task-id>", "files_changed?": 0, "tests_summary?": "<string>", "exit_status?": 0}
+{"ts": "<ISO8601>", "event": "council_verdict", "task": "<task-id>", "verdict": "PASS" | "FAIL", "evaluator_count": 3, "abstentions": 0}
 ```
 
 - **EVENT-4** (*neutral progress*): `task_progress` notes MUST be harness-neutral — human-readable status a viewer can render without knowing the harness. Loop-internal state (tool calls, token counts, harness session structure) MUST NOT be written to the bus; adapters project milestones only.
@@ -107,7 +109,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 
 | Path / ref | Reserved for |
 |---|---|
-| `.agents/council/` | council verdicts (v0.2) — one file per task, `<task-id>.json`: `{task, verdict, votes[]}`. Supersedes ARCHITECTURE.md's two divergent sketches (per-task `.result` vs per-evaluator files). |
+| `.agents/council/` | council verdicts — one file per task, `<task-id>.json`: `{task, verdict, ts, votes[]}`. Contract is now live in §12 (v0.2). Supersedes ARCHITECTURE.md's two divergent sketches (per-task `.result` vs per-evaluator files). |
 | `.agents/registry.json` | agent fleet registry (v1) |
 | `~/.agents/index.json` | global derived cache across repos — written by `index` tool (contract deferred to v0.2), NEVER source of truth |
 | `refs/tasks/*` | multi-machine claim race (v2) |
@@ -132,6 +134,12 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | C12 gate allows humans | APPROVAL-4 |
 | C13 end-to-end lifecycle | full inbox→claimed→done with parseable log; ADAPTER-2 (no harness-private files under `.agents/`) |
 | C14 log integrity | EVENT-1 (append-only), EVENT-3 (reader side: tolerate unknown types) |
+| C15 council happy path | COUNCIL-1..5, COUNCIL-9..11 (3 PASS → verdict PASS, file shape, event) |
+| C16 council majority math | COUNCIL-8 (2-1 → PASS; 1-2 → FAIL; 0-3 → FAIL) |
+| C17 council abstain | COUNCIL-6, COUNCIL-8 (crash/silent evaluators → ABSTAIN; all-abstain → FAIL) |
+| C18 council idempotent re-run | COUNCIL-9 (second run overwrites verdict; two `council_verdict` events) |
+| C19 council bus resolution | COUNCIL-2, COUNCIL-3 (CWD-independent; verdict + event land in main checkout) |
+| C20 council harness independence | COUNCIL-2 (runs with harness binaries stripped from PATH) |
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
@@ -143,3 +151,67 @@ Modes: `conformance.sh` (test bus tools alone) · `conformance.sh --adapter <cmd
 2. Claim/complete live in Commandr `bin/` on PATH, not per-project `scripts/` (supersedes ARCHITECTURE.md Placement section and PRD v0.5 §Command Contracts paths).
 3. Event-emission responsibility restated as an invariant (CLAIM-4/COMPLETE-2) rather than "caller appends" — same behavior, testable cross-harness.
 4. Claimed-filename separator is `_`, not `-` (supersedes PRD v0.5 §Claimed Filename Format and the ARCHITECTURE.md claim.sh sketch): left-splitting on `-` is ambiguous because hostnames (`ip-10-0-1-100`) and task ids (`TASK-001`) both contain dashes.
+
+## 12. Council Quality Gate
+
+**Added in v0.2.** `bin/council` is the one council engine on PATH (blueprint decision 6); `review-council` and `delegate-pi` council mode are thin wrappers over it. Council is **advisory**: it MUST NOT write or delete approval tokens and MUST NOT block the approval gate (§7). The human git gate is authoritative (decision 9). Every MUST below has a conformance ID (§10).
+
+### 12.1 Invocation
+
+```
+council <claimed-or-done-path>
+```
+
+`<claimed-or-done-path>` is the absolute path to a packet in `.agents/claimed/` or `.agents/done/`. Council is invoked explicitly; it is NOT called automatically by `claim`, `complete`, or `pre-commit-gate`.
+
+- stdout on normal completion (any verdict): `council:<task-id>:<PASS|FAIL>\n`, exit 0 — a FAIL verdict is a normal outcome, not an error.
+- exit 1: runtime error (bus unresolvable, packet unreadable, verdict write failed). On exit 1 the verdict file MUST NOT exist or be left partially written.
+- exit 2: usage error (wrong argument count; packet not under `.agents/`).
+
+- **COUNCIL-1**: Council is advisory. It MUST NOT create, delete, or alter `.agents/approvals/` tokens, and its verdict MUST NOT gate `pre-commit-gate`. *(C15)*
+- **COUNCIL-2**: `council` MUST resolve the bus as the grandparent of the packet's containing directory (same pattern as `complete`), MUST NOT depend on `$CWD`, and MUST NOT require any harness to be installed or running (cf. APPROVAL-2). *(C19, C20)*
+- **COUNCIL-3**: The task id MUST be read from the packet's frontmatter `id:` field, never derived from the filename. *(C19)*
+
+### 12.2 Evaluator interface (the testability seam)
+
+- **COUNCIL-4**: `council` MUST read `COUNCIL_EVALUATOR_CMD`. When set to a non-empty value it MUST be used as the evaluator command for all three invocations; when unset or empty `council` falls back to its built-in Haiku-backed evaluator. This override is the deterministic seam used by conformance. *(C15)*
+- **COUNCIL-5**: `council` MUST invoke the evaluator exactly three times, in parallel, one per dimension (§12.3), as `$COUNCIL_EVALUATOR_CMD <prompt-file> <dimension>`. A valid vote is exit 0 with a stdout line matching `^VOTE: (PASS|FAIL)$`; an optional following line `REASON: <single-line>` MAY be supplied. All other stdout is ignored. *(C15)*
+- **COUNCIL-6**: A non-zero exit, a missing `VOTE:` line, or a timeout (implementations SHOULD default to 120 s) MUST be recorded as `"vote": "ABSTAIN"`. An ABSTAIN is a normal vote outcome, not a `council` error. *(C17)*
+- **COUNCIL-7**: `council` MUST remove the temporary prompt files it creates before exiting on the normal path. *(C15)*
+
+### 12.3 Dimensions
+
+`council` MUST run exactly these three dimensions, passed as the second argument; they are not runtime-configurable in v0.2:
+
+| Dimension | Lens |
+|---|---|
+| `acceptance-criteria` | Do all acceptance criteria in the packet pass? |
+| `code-quality` | Does the diff introduce correctness, error-handling, or API-misuse issues? |
+| `style` | Are types, naming, and formatting consistent with the surrounding code? |
+
+### 12.4 Majority
+
+Let P = count of `PASS` votes.
+
+- **COUNCIL-8**: `verdict = "PASS"` if and only if `P >= 2`; otherwise `verdict = "FAIL"`. ABSTAIN votes count as non-votes; a tie or all-ABSTAIN run resolves to `"FAIL"` (fail-safe). *(C16, C17)*
+
+### 12.5 Verdict file
+
+- **COUNCIL-9**: On normal completion `council` MUST write exactly one file at `.agents/council/<task-id>.json` (LAYOUT-3: gitignored, derived). The write MUST be atomic (temp file on the same filesystem, then `mv`). An existing verdict file for the same task MUST be overwritten — re-runs are idempotent. *(C18)*
+- **COUNCIL-10**: The verdict file MUST contain exactly these top-level fields and no others: `task` (string, COUNCIL-3), `verdict` (`"PASS"|"FAIL"`), `ts` (ISO 8601 UTC), `votes` (array of exactly three Vote objects). A Vote object has `dimension` (one of §12.3), `vote` (`"PASS"|"FAIL"|"ABSTAIN"`), and `reason` (string; MAY be empty for ABSTAIN). Readers MUST tolerate unknown fields (PACKET-2 precedent); writers MUST NOT add fields beyond those listed (decision-4 fence). *(C15)*
+
+```json
+{"task":"TASK-001","verdict":"PASS","ts":"2026-06-10T12:00:00Z","votes":[
+  {"dimension":"acceptance-criteria","vote":"PASS","reason":"All criteria satisfied."},
+  {"dimension":"code-quality","vote":"PASS","reason":"No issues found."},
+  {"dimension":"style","vote":"FAIL","reason":"Missing type annotation on webhook.ts:42."}
+]}
+```
+
+### 12.6 Event
+
+- **COUNCIL-11**: After writing the verdict file and before printing the stdout line, `council` MUST append exactly one `council_verdict` event (§6) carrying `task`, `verdict`, `evaluator_count` (always `3` in v0.2), and `abstentions` (integer). Per-evaluator reasoning MUST NOT appear in the event (decision-4 fence). `council_verdict` is a defined event type (EVENT-3). *(C15, C18)*
+
+### 12.7 Deferred to v0.3
+
+Strict fail-closed coupling (gate the approval token on a present-and-PASS verdict — the §7 APPROVAL-4 open question); a `council_start` event; a `model` field in the verdict file; `COUNCIL_EVAL_TIMEOUT` as a normative knob; runtime-configurable dimensions.
