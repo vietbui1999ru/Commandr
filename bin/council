@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
-# council — advisory quality gate: 3 evaluators in parallel, majority vote, one verdict file.
+# council — advisory quality gate: 3 evaluators in parallel, majority vote.
 #
-# Contract: SPEC v0.2 §12 (COUNCIL-1..11).
-#   usage:   council <claimed-or-done-path>
-#   stdout:  council:{task-id}:{PASS|FAIL}\n on normal completion, exit 0
-#            (a FAIL verdict is a normal outcome, not an error)
-#   exit 1:  runtime error (bus unresolvable, packet unreadable, verdict write failed);
-#            the verdict file is never left partially written.
-#   exit 2:  usage error (wrong arg count; packet not under .agents/claimed|done).
+# Contract: SPEC v0.2 §12 (COUNCIL-1..15). Two invocation modes share one engine
+# (the evaluator seam + dimensions + majority rule); only input and output differ.
+#
+#   Packet mode (§12.1) — the bus gate:
+#     usage:   council <claimed-or-done-path>
+#     stdout:  council:{task-id}:{PASS|FAIL}\n on normal completion, exit 0
+#     effect:  writes .agents/council/<id>.json + one council_verdict event.
+#
+#   Diff mode (§12.7) — bus-less, for the review-council / delegate-pi wrappers:
+#     usage:   council --diff <ref-range>     (any `git diff` argument)
+#              council --diff -               (unified diff on stdin)
+#     stdout:  {"mode":"diff","verdict":"PASS|FAIL","votes":[...]}\n, exit 0
+#     effect:  NONE — resolves no bus, writes no file, appends no event (COUNCIL-12).
+#
+#   exit 1:  runtime error (bus unresolvable, packet unreadable, write failed,
+#            or a diff range git cannot resolve); no partial verdict file.
+#   exit 2:  usage error.
 #
 # Advisory (COUNCIL-1): never touches .agents/approvals/; the human git gate (§7)
 # is authoritative. Evaluator seam (COUNCIL-4..6): COUNCIL_EVALUATOR_CMD, invoked
@@ -17,10 +27,107 @@
 # back to the built-in Haiku evaluator.
 set -u
 
-usage() { printf 'usage: council <claimed-or-done-path>\n' >&2; exit 2; }
-[ $# -eq 1 ] || usage
-path=$1
+usage() {
+  printf 'usage: council <claimed-or-done-path>\n       council --diff <ref-range>|-\n' >&2
+  exit 2
+}
+[ "$#" -ge 1 ] || usage
 
+# JSON string escape for values we construct.
+json_esc() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "$s"; }
+
+# COUNCIL-5: exactly three dimensions, identical across both modes (§12.3).
+dims="acceptance-criteria code-quality style"
+evaluator=${COUNCIL_EVALUATOR_CMD:-}
+
+# Built-in default: ask the Claude Code CLI. Absent (the COUNCIL-2 default has no
+# harness) → non-zero, which becomes ABSTAIN downstream (fail-safe).
+builtin_eval() {
+  command -v claude >/dev/null 2>&1 || return 1
+  claude -p "$(cat "$1")
+Evaluate ONLY the '$2' dimension of this work. Reply with exactly one line, either
+'VOTE: PASS' or 'VOTE: FAIL', optionally followed by a line 'REASON: <one line>'." 2>/dev/null
+}
+
+run_one() { # run_one <prompt-file> <dimension>
+  if [ -n "$evaluator" ]; then "$evaluator" "$1" "$2"; else builtin_eval "$1" "$2"; fi
+}
+
+# dispatch_and_tally <prompt-file> <work-dir>
+# Runs the seam once per dimension in parallel, then tallies. Sets the globals
+# `verdict`, `pass`, `abstain`, `votes` (votes[] JSON in dimension order).
+dispatch_and_tally() {
+  local prompt=$1 work=$2 dim pids="" pd pid ec v vote reason entry
+  for dim in $dims; do
+    run_one "$prompt" "$dim" > "$work/out.$dim" 2>/dev/null &
+    pids="$pids $!:$dim"
+  done
+  for pd in $pids; do
+    pid=${pd%%:*}; dim=${pd#*:}
+    if wait "$pid"; then echo 0 > "$work/ec.$dim"; else echo 1 > "$work/ec.$dim"; fi
+  done
+  pass=0; abstain=0; votes=""
+  for dim in $dims; do
+    ec=$(cat "$work/ec.$dim" 2>/dev/null || echo 1)
+    vote="ABSTAIN"; reason=""
+    if [ "$ec" -eq 0 ]; then
+      # COUNCIL-5: valid vote = exit 0 AND a clean `VOTE: PASS|FAIL` line.
+      v=$(grep -m1 -E '^VOTE: (PASS|FAIL)$' "$work/out.$dim" 2>/dev/null | awk '{print $2}')
+      if [ -n "$v" ]; then
+        vote=$v
+        reason=$(grep -m1 '^REASON: ' "$work/out.$dim" 2>/dev/null | sed 's/^REASON: //' | tr -d '[:cntrl:]')
+      fi
+    fi
+    case "$vote" in
+      PASS) pass=$((pass+1)) ;;
+      ABSTAIN) abstain=$((abstain+1)) ;;
+    esac
+    entry=$(printf '{"dimension":"%s","vote":"%s","reason":"%s"}' \
+      "$dim" "$vote" "$(json_esc "$reason")")
+    votes="${votes:+$votes,}$entry"
+  done
+  # COUNCIL-8: PASS iff at least two PASS votes; ties and all-abstain fail-safe to FAIL.
+  if [ "$pass" -ge 2 ]; then verdict="PASS"; else verdict="FAIL"; fi
+}
+
+# The no-input fail-safe (COUNCIL-15): an empty diff is nothing to evaluate, so the
+# seam is never dispatched and every dimension ABSTAINs → FAIL.
+all_abstain() {
+  local dim
+  votes=""
+  for dim in $dims; do
+    votes="${votes:+$votes,}$(printf '{"dimension":"%s","vote":"ABSTAIN","reason":""}' "$dim")"
+  done
+  verdict="FAIL"; pass=0; abstain=3
+}
+
+# ---- Diff mode (§12.7): bus-less, pure diff -> verdict on stdout -------------
+if [ "$1" = "--diff" ]; then
+  [ "$#" -eq 2 ] || usage
+  src=$2
+  work=$(mktemp -d "${TMPDIR:-/tmp}/council.XXXXXX") || exit 1
+  trap 'rm -rf "$work"' EXIT
+  diff="$work/diff.txt"
+  if [ "$src" = "-" ]; then
+    cat > "$diff"
+  else
+    # COUNCIL-15: a range git cannot resolve is a runtime error (exit 1, no stdout).
+    git diff "$src" > "$diff" 2>/dev/null \
+      || { printf 'council: cannot resolve diff range: %s\n' "$src" >&2; exit 1; }
+  fi
+  if [ -s "$diff" ]; then
+    dispatch_and_tally "$diff" "$work"
+  else
+    all_abstain
+  fi
+  # COUNCIL-14: exactly one JSON object on stdout; no bus side effects of any kind.
+  printf '{"mode":"diff","verdict":"%s","votes":[%s]}\n' "$verdict" "$votes"
+  exit 0
+fi
+
+# ---- Packet mode (§12.1): the bus gate --------------------------------------
+[ "$#" -eq 1 ] || usage
+path=$1
 [ -f "$path" ] || { printf 'council: no such packet: %s\n' "$path" >&2; exit 1; }
 
 # COUNCIL-2: resolve the bus as the grandparent of the packet's directory, so the
@@ -56,58 +163,7 @@ prompt="$work/prompt.txt"
   ( cd "$bus/.." && git diff HEAD~1 -- . 2>/dev/null ) || true
 } > "$prompt"
 
-evaluator=${COUNCIL_EVALUATOR_CMD:-}
-
-# Built-in default: ask the Claude Code CLI. Absent (COUNCIL-2 default has no harness)
-# → non-zero, which becomes ABSTAIN downstream (fail-safe).
-builtin_eval() {
-  command -v claude >/dev/null 2>&1 || return 1
-  claude -p "$(cat "$1")
-Evaluate ONLY the '$2' dimension of this work. Reply with exactly one line, either
-'VOTE: PASS' or 'VOTE: FAIL', optionally followed by a line 'REASON: <one line>'." 2>/dev/null
-}
-
-run_one() { # run_one <prompt-file> <dimension>
-  if [ -n "$evaluator" ]; then "$evaluator" "$1" "$2"; else builtin_eval "$1" "$2"; fi
-}
-
-# COUNCIL-5: exactly three dimensions, in parallel.
-dims="acceptance-criteria code-quality style"
-pids=""
-for dim in $dims; do
-  run_one "$prompt" "$dim" > "$work/out.$dim" 2>/dev/null &
-  pids="$pids $!:$dim"
-done
-for pd in $pids; do
-  pid=${pd%%:*}; dim=${pd#*:}
-  if wait "$pid"; then echo 0 > "$work/ec.$dim"; else echo 1 > "$work/ec.$dim"; fi
-done
-
-# Tally votes in dimension order; build the votes[] JSON.
-pass=0; abstain=0; votes=""
-json_esc() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "$s"; }
-for dim in $dims; do
-  ec=$(cat "$work/ec.$dim" 2>/dev/null || echo 1)
-  vote="ABSTAIN"; reason=""
-  if [ "$ec" -eq 0 ]; then
-    # COUNCIL-5: valid vote = exit 0 AND a clean `VOTE: PASS|FAIL` line.
-    v=$(grep -m1 -E '^VOTE: (PASS|FAIL)$' "$work/out.$dim" 2>/dev/null | awk '{print $2}')
-    if [ -n "$v" ]; then
-      vote=$v
-      reason=$(grep -m1 '^REASON: ' "$work/out.$dim" 2>/dev/null | sed 's/^REASON: //' | tr -d '[:cntrl:]')
-    fi
-  fi
-  case "$vote" in
-    PASS) pass=$((pass+1)) ;;
-    ABSTAIN) abstain=$((abstain+1)) ;;
-  esac
-  entry=$(printf '{"dimension":"%s","vote":"%s","reason":"%s"}' \
-    "$dim" "$vote" "$(json_esc "$reason")")
-  votes="${votes:+$votes,}$entry"
-done
-
-# COUNCIL-8: PASS iff at least two PASS votes; ties and all-abstain fail-safe to FAIL.
-if [ "$pass" -ge 2 ]; then verdict="PASS"; else verdict="FAIL"; fi
+dispatch_and_tally "$prompt" "$work"
 
 id_esc=$(json_esc "$id")
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
