@@ -8,7 +8,7 @@
 #                                     # (driver verbs: capabilities, turn-end <dir>,
 #                                     #  session-end <dir> <sid> — see c13_adapter)
 #
-# Status: C01-C24 live, including the adapter-mode C13 drive, the §12 council gate,
+# Status: C01-C27 live, including the adapter-mode C13 drive, the §12 council gate,
 # and the §13 index fold.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
@@ -791,12 +791,92 @@ PY
     || bad "$id" "second run diverged from first (INDEX-7)"
 }
 
+c25() { # COUNCIL-12, 14: --diff range mode is bus-less; verdict JSON on stdout, no .agents/ side effect
+  local id="C25-council-diff-busless"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local d out rc bf af be ae
+  d=$(council_stubs)
+  # A resolvable, non-empty diff without a commit: stage a fresh file, diff --cached.
+  printf 'diff body\n' > diff-src-c25.txt
+  git add diff-src-c25.txt
+  # Snapshot the bus: a --diff run must not touch council/ or the event log (COUNCIL-12).
+  bf=$(ls .agents/council 2>/dev/null | wc -l | tr -d ' ')
+  be=$(wc -l < .agents/events.jsonl | tr -d ' ')
+  out=$(COUNCIL_EVALUATOR_CMD="$d/pass" "$COUNCIL_CMD" --diff --cached); rc=$?
+  git rm -q --cached -f diff-src-c25.txt; rm -f diff-src-c25.txt
+  [ $rc -eq 0 ] || { bad "$id" "exit $rc in --diff mode (COUNCIL-14)"; return; }
+  printf '%s' "$out" > "$FIXTURE/.c25.json"
+  python3 - "$FIXTURE/.c25.json" <<'PY' || { bad "$id" "diff-mode stdout shape (COUNCIL-14)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert set(d)=={"mode","verdict","votes"}, d.keys()                    # no bus fields (no task/ts)
+assert d["mode"]=="diff" and d["verdict"]=="PASS"
+assert len(d["votes"])==3
+assert {v["dimension"] for v in d["votes"]}=={"acceptance-criteria","code-quality","style"}
+assert all(set(v)=={"dimension","vote","reason"} and v["vote"]=="PASS" for v in d["votes"])
+PY
+  af=$(ls .agents/council 2>/dev/null | wc -l | tr -d ' ')
+  ae=$(wc -l < .agents/events.jsonl | tr -d ' ')
+  [ "$bf" = "$af" ] && [ "$be" = "$ae" ] \
+    && ok "$id" "range diff -> verdict JSON on stdout; no council file, no event (COUNCIL-12/14)" \
+    || bad "$id" "--diff mutated the bus: council $bf->$af, events $be->$ae (COUNCIL-12)"
+}
+
+c26() { # COUNCIL-13, 14: --diff stdin; seam invoked exactly 3x; three Vote objects
+  local id="C26-council-diff-stdin"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local cdir cstub out rc n
+  cdir=$(mktemp -d "${TMPDIR:-/tmp}/council-c26.XXXXXX")
+  cstub="$cdir/count"
+  # A counting evaluator: one line per invocation proves the seam fired three times.
+  printf '#!/usr/bin/env bash\necho call >> "%s/calls"\necho "VOTE: PASS"\n' "$cdir" > "$cstub"
+  chmod +x "$cstub"
+  out=$(printf 'diff --git a/x b/x\n+changed\n' | COUNCIL_EVALUATOR_CMD="$cstub" "$COUNCIL_CMD" --diff -); rc=$?
+  n=$(wc -l < "$cdir/calls" 2>/dev/null | tr -d ' ')
+  rm -rf "$cdir"
+  [ $rc -eq 0 ] || { bad "$id" "exit $rc on stdin diff (COUNCIL-14)"; return; }
+  [ "$n" = "3" ] || { bad "$id" "seam invoked $n times, expected 3 (COUNCIL-13)"; return; }
+  printf '%s' "$out" > "$FIXTURE/.c26.json"
+  python3 - "$FIXTURE/.c26.json" <<'PY' || { bad "$id" "stdin diff stdout shape (COUNCIL-14)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["mode"]=="diff" and d["verdict"]=="PASS"
+assert len(d["votes"])==3 and {v["dimension"] for v in d["votes"]}=={"acceptance-criteria","code-quality","style"}
+PY
+  ok "$id" "stdin diff -> seam fired 3x; exactly three Vote objects (COUNCIL-13/14)"
+}
+
+c27() { # COUNCIL-15: empty diff -> all-ABSTAIN FAIL exit 0; bad range -> exit 1, nothing on stdout
+  local id="C27-council-diff-edges"
+  have "$COUNCIL_CMD" || { skip "$id" "$COUNCIL_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local out rc
+  # Empty stdin is a valid, empty diff: the seam is never dispatched; fail-safe to FAIL.
+  out=$(printf '' | "$COUNCIL_CMD" --diff -); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "empty diff exited $rc, must be 0 (COUNCIL-15)"; return; }
+  printf '%s' "$out" > "$FIXTURE/.c27.json"
+  python3 - "$FIXTURE/.c27.json" <<'PY' || { bad "$id" "empty-diff verdict shape (COUNCIL-15)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["mode"]=="diff" and d["verdict"]=="FAIL"
+assert len(d["votes"])==3 and all(v["vote"]=="ABSTAIN" for v in d["votes"])
+PY
+  # A range git cannot resolve is a runtime error: exit 1, nothing on stdout.
+  out=$("$COUNCIL_CMD" --diff no-such-ref-c27 2>/dev/null); rc=$?
+  [ $rc -eq 1 ] && [ -z "$out" ] \
+    && ok "$id" "empty diff -> ABSTAIN FAIL exit 0; unresolvable range -> exit 1, no stdout (COUNCIL-15)" \
+    || bad "$id" "bad range: rc=$rc stdout='$out', expected rc=1 and empty (COUNCIL-15)"
+}
+
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14
 c15; c16; c17; c18; c19; c20
 c21; c22; c23; c24
+c25; c26; c27
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
-# All 24 cases are live (0 stubs). A skip means a tool was missing from PATH or a
+# All 27 cases are live (0 stubs). A skip means a tool was missing from PATH or a
 # prerequisite failed — a misconfigured run, not a pass. Fail closed so a fully
 # skipped run can never report green (0 passed / 0 failed must not exit 0).
 [ "$FAIL" -eq 0 ] && [ "$SKIP" -eq 0 ] && [ "$PASS" -gt 0 ] || exit 1

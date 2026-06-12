@@ -144,6 +144,9 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | C22 index derived-only | INDEX-5 (no cache inside repo buses; task shape is exactly the projection) |
 | C23 index bad repo | INDEX-6 (one missing/unreadable repo recorded, not fatal; good repos still fold) |
 | C24 index write discipline | INDEX-7 (creates missing dir; atomic, no tmp residue; provenance; idempotent) |
+| C25 council diff bus-less | COUNCIL-12, COUNCIL-14 (range mode → verdict JSON on stdout; no `.agents/` file or event created) |
+| C26 council diff stdin | COUNCIL-13, COUNCIL-14 (stdin diff; seam invoked 3×; exactly three Vote objects) |
+| C27 council diff edges | COUNCIL-15 (empty diff → all-ABSTAIN FAIL, exit 0; unresolvable range → exit 1, nothing on stdout) |
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
@@ -158,7 +161,7 @@ Modes: `conformance.sh` (test bus tools alone) · `conformance.sh --adapter <cmd
 
 ## 12. Council Quality Gate
 
-**Added in v0.2.** `bin/council` is the one council engine on PATH (blueprint decision 6); `review-council` and `delegate-pi` council mode are thin wrappers over it. Council is **advisory**: it MUST NOT write or delete approval tokens and MUST NOT block the approval gate (§7). The human git gate is authoritative (decision 9). Every MUST below has a conformance ID (§10).
+**Added in v0.2.** `bin/council` is the one council engine on PATH (blueprint decision 6). It has two invocation modes that share a single engine (the evaluator seam §12.2, the dimensions §12.3, the majority rule §12.4): **packet mode** (§12.1) is the bus gate; **diff mode** (§12.7) is bus-less and is what the `review-council` / `delegate-pi` wrappers build on. Because `review-council`'s reviewers are Claude-harness subagents — which a shell evaluator seam cannot spawn — `delegate-pi` council mode is a literal `council --diff` wrapper, while `review-council` is a *contract-conformant client*: it keeps its own subagent dispatch but adopts this section's vote format, majority rule, and verdict vocabulary. Council is **advisory**: it MUST NOT write or delete approval tokens and MUST NOT block the approval gate (§7). The human git gate is authoritative (decision 9). Every MUST below has a conformance ID (§10).
 
 ### 12.1 Invocation
 
@@ -216,7 +219,23 @@ Let P = count of `PASS` votes.
 
 - **COUNCIL-11**: After writing the verdict file and before printing the stdout line, `council` MUST append exactly one `council_verdict` event (§6) carrying `task`, `verdict`, `evaluator_count` (always `3` in v0.2), and `abstentions` (integer). Per-evaluator reasoning MUST NOT appear in the event (decision-4 fence). `council_verdict` is a defined event type (EVENT-3). *(C15, C18)*
 
-### 12.7 Deferred to v0.3
+### 12.7 Diff mode (bus-less evaluation)
+
+`review-council` and `delegate-pi` review a working diff, not a bus packet, and must not touch any repo's `.agents/`. Diff mode is the seam that lets them reuse the one council engine (decision 6) without becoming bus writers.
+
+```
+council --diff <ref-range>
+council --diff -
+```
+
+`<ref-range>` is any argument accepted by `git diff` (e.g. `HEAD`, `HEAD~1..HEAD`); `-` reads a unified diff from stdin. The evaluator seam (§12.2), the three dimensions (§12.3), and the majority rule (§12.4) are identical to packet mode — only the input and the output differ. (The `acceptance-criteria` dimension still runs even though a diff carries no packet criteria; the evaluator judges it against the diff. Keeping all three dimensions makes the engine identical across modes.)
+
+- **COUNCIL-12**: In `--diff` mode `council` MUST NOT resolve or require a bus, MUST NOT write a verdict file, and MUST NOT append any event. It is a pure function from a diff to a verdict on stdout — no `.agents/` side effect of any kind (decision-4 fence; the wrappers operate outside the bus). *(C25)*
+- **COUNCIL-13**: The evaluator prompt MUST be built from the diff text alone (there is no packet). The seam is still invoked exactly three times in parallel, once per dimension, with vote-line parsing and ABSTAIN handling exactly as COUNCIL-5 / COUNCIL-6. *(C26)*
+- **COUNCIL-14**: On normal completion `--diff` mode MUST print exactly one JSON object to stdout and exit 0: `{"mode":"diff","verdict":"PASS|FAIL","votes":[…]}`, where `votes` is an array of exactly three Vote objects (COUNCIL-10 shape: `dimension`, `vote`, `reason`) and `verdict` follows the majority rule (COUNCIL-8). No other stdout is produced. *(C25, C26)*
+- **COUNCIL-15**: A `<ref-range>` that `git diff` cannot resolve MUST exit 1 with nothing on stdout (cf. §12.1). An empty diff (a valid range with no changes, or empty stdin) is NOT an error: the seam MUST NOT be dispatched and the run MUST resolve to `verdict` `"FAIL"` with all three votes `ABSTAIN` (fail-safe, COUNCIL-8), exit 0. *(C27)*
+
+### 12.8 Deferred to v0.3
 
 Strict fail-closed coupling (gate the approval token on a present-and-PASS verdict — the §7 APPROVAL-4 open question); a `council_start` event; a `model` field in the verdict file; `COUNCIL_EVAL_TIMEOUT` as a normative knob; runtime-configurable dimensions.
 

@@ -38,7 +38,7 @@ jobs:
         run: |
           git config --global user.email "ci@commandr.invalid"
           git config --global user.name "Commandr CI"
-      - name: Bus tools conformance (SPEC v0.1+v0.2, C01-C24)
+      - name: Bus tools conformance (SPEC v0.1+v0.2, C01-C27)
         run: |
           CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
           GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
