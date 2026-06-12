@@ -8,11 +8,12 @@
 #                                     # (driver verbs: capabilities, turn-end <dir>,
 #                                     #  session-end <dir> <sid> — see c13_adapter)
 #
-# Status: C01-C20 live, including the adapter-mode C13 drive and the §12 council gate.
+# Status: C01-C24 live, including the adapter-mode C13 drive, the §12 council gate,
+# and the §13 index fold.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
 #                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress),
-#                COUNCIL_CMD (default: council)
+#                COUNCIL_CMD (default: council), INDEX_CMD (default: index)
 set -u
 
 CLAIM_CMD=${CLAIM_CMD:-claim}
@@ -20,6 +21,7 @@ COMPLETE_CMD=${COMPLETE_CMD:-complete}
 GATE_CMD=${GATE_CMD:-pre-commit-gate}
 PROGRESS_CMD=${PROGRESS_CMD:-progress}
 COUNCIL_CMD=${COUNCIL_CMD:-council}
+INDEX_CMD=${INDEX_CMD:-index}
 export PROGRESS_CMD   # adapters resolve their emitter through this in adapter mode
 ADAPTER_CMD=""
 while [ $# -gt 0 ]; do
@@ -38,7 +40,13 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # --- fixture: throwaway git repo with a bootstrapped bus ---------------------
 FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/agents-conformance.XXXXXX")
 FIXTURE=$(cd "$FIXTURE" && pwd -P)   # resolve symlinks (macOS /var -> /private/var) so path comparisons hold
-trap 'rm -rf "$FIXTURE" "$FIXTURE-wt"' EXIT
+# §13 index fixtures live OUTSIDE the git FIXTURE: index resolves a repo's bus via
+# `git rev-parse --git-common-dir`, so any bus nested under the git fixture would
+# redirect to FIXTURE's own .agents. A separate non-git root exercises the
+# $repo/.agents fallback that real per-repo buses take.
+IDX=$(mktemp -d "${TMPDIR:-/tmp}/agents-index.XXXXXX")
+IDX=$(cd "$IDX" && pwd -P)
+trap 'rm -rf "$FIXTURE" "$FIXTURE-wt" "$IDX"' EXIT
 cd "$FIXTURE"
 git init -q -b main .
 mkdir -p .agents/{inbox,claimed,done,approvals}
@@ -98,6 +106,38 @@ Council fixture.
 - [ ] none
 EOF
   printf '%s' "$p"
+}
+
+# A standalone §13 bus with one task per state, plus a council verdict and a
+# progress note — the raw material `index` folds. Built under IDX (no git), so
+# index takes the $repo/.agents fallback. owner is encoded in the claimed/done
+# filename ({host}_{pid}_{id}); the verdict and the "halfway" note are the bus
+# facts index must project verbatim.
+index_packet() { # index_packet <path> <id>
+  cat > "$1" <<EOF
+---
+id: $2
+type: implementation
+scope: src/**
+---
+# $2
+EOF
+}
+
+index_make() { # index_make <repo-dir>
+  local b="$1/.agents"
+  mkdir -p "$b"/{inbox,claimed,done,council}
+  index_packet "$b/inbox/IX-IN.md"          IX-IN
+  index_packet "$b/claimed/box_77_IX-CL.md" IX-CL
+  index_packet "$b/done/box_88_IX-DN.md"    IX-DN
+  printf '{"task":"IX-DN","verdict":"PASS","ts":"2026-01-01T00:00:00Z","votes":[]}\n' \
+    > "$b/council/IX-DN.json"
+  {
+    printf '{"ts":"2026-01-01T00:00:01Z","event":"task_claimed","task":"IX-CL","agent":"box_77"}\n'
+    printf '{"ts":"2026-01-01T00:00:02Z","event":"task_progress","task":"IX-CL","agent":"box_77","note":"halfway"}\n'
+    printf '{"ts":"2026-01-01T00:00:03Z","event":"task_claimed","task":"IX-DN","agent":"box_88"}\n'
+    printf '{"ts":"2026-01-01T00:00:04Z","event":"task_complete","task":"IX-DN","agent":"box_88"}\n'
+  } > "$b/events.jsonl"
 }
 
 # --- C01 layout (LAYOUT-1..3) ------------------------------------------------
@@ -662,11 +702,101 @@ c20() { # COUNCIL-2: harness-independent — the seam means the harness is never
     || bad "$id" "council invoked the harness despite COUNCIL_EVALUATOR_CMD (COUNCIL-2)"
 }
 
+c21() { # INDEX-1..4: fold two buses; project state, owner, verdict, last_note
+  local id="C21-index-fold"
+  have "$INDEX_CMD" || { skip "$id" "$INDEX_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local A="$IDX/repoA" B="$IDX/repoB" out rc
+  mkdir -p "$A" "$B"; index_make "$A"; index_make "$B"
+  out=$(AGENTS_INDEX_FILE="$IDX/index.json" "$INDEX_CMD" refresh "$A" "$B"); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "index exited $rc on the happy path (INDEX-1)"; return; }
+  [ "$out" = "index:$IDX/index.json" ] || { bad "$id" "stdout '$out', expected index:$IDX/index.json (INDEX-2)"; return; }
+  python3 - "$IDX/index.json" <<'PY' || { bad "$id" "projected task fields wrong (INDEX-4)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+t={(x["repo"],x["id"]):x for x in d["tasks"]}
+assert len(d["tasks"])==6, len(d["tasks"])               # 3 states x 2 repos
+for repo in ("repoA","repoB"):
+    inb=t[(repo,"IX-IN")]; cl=t[(repo,"IX-CL")]; dn=t[(repo,"IX-DN")]
+    assert inb["state"]=="inbox" and inb["owner"] is None and inb["verdict"] is None
+    assert cl["state"]=="claimed" and cl["owner"]=="box_77" and cl["last_note"]=="halfway"
+    assert dn["state"]=="done"  and dn["owner"]=="box_88" and dn["verdict"]=="PASS"
+PY
+  ok "$id" "two buses folded; state/owner/verdict/last_note projected (INDEX-1..4)"
+}
+
+c22() { # INDEX-5 (decision-4 fence): derived cache never lands in a repo bus; shape is exactly the projection
+  local id="C22-index-derived"
+  have "$INDEX_CMD" || { skip "$id" "$INDEX_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local A="$IDX/d-repoA" B="$IDX/d-repoB" r
+  mkdir -p "$A" "$B"; index_make "$A"; index_make "$B"
+  AGENTS_INDEX_FILE="$IDX/d-index.json" "$INDEX_CMD" refresh "$A" "$B" >/dev/null \
+    || { bad "$id" "index failed"; return; }
+  for r in "$A" "$B"; do
+    [ -e "$r/.agents/index.json" ] && { bad "$id" "derived cache written into $r/.agents (§9 derived-only)"; return; }
+  done
+  python3 - "$IDX/d-index.json" <<'PY' || { bad "$id" "task object carries non-projection fields (decision-4 fence)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+keys={"repo","id","state","owner","verdict","last_event_ts","last_note"}
+for x in d["tasks"]:
+    assert set(x)==keys, set(x)
+PY
+  ok "$id" "no cache inside repo buses; task fields are exactly the bus projection (INDEX-5)"
+}
+
+c23() { # INDEX-6: one unreadable repo is recorded, never fatal; good repos still fold
+  local id="C23-index-badrepo"
+  have "$INDEX_CMD" || { skip "$id" "$INDEX_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local G="$IDX/b-good" ghost="$IDX/b-ghost-absent" out rc
+  mkdir -p "$G"; index_make "$G"
+  out=$(AGENTS_INDEX_FILE="$IDX/b-index.json" "$INDEX_CMD" refresh "$ghost" "$G"); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "one bad repo failed the whole run (rc=$rc) (INDEX-6)"; return; }
+  python3 - "$IDX/b-index.json" "$ghost" "$G" <<'PY' || { bad "$id" "bad/good repo handling wrong (INDEX-6)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1])); ghost,good=sys.argv[2],sys.argv[3]
+r={x["path"]:x for x in d["repos"]}
+assert r[ghost]["ok"] is False and "error" in r[ghost]            # ghost recorded, not fatal
+assert r[good]["ok"] is True                                       # good repo still scanned
+assert {x["id"] for x in d["tasks"]}=={"IX-IN","IX-CL","IX-DN"}     # only the good repo's tasks
+PY
+  ok "$id" "ghost repo -> ok:false+error, exit 0; good repo still folded (INDEX-6)"
+}
+
+c24() { # INDEX-7: creates a missing output dir; atomic (no tmp residue); provenance; idempotent
+  local id="C24-index-atomic"
+  have "$INDEX_CMD" || { skip "$id" "$INDEX_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+  local A="$IDX/a-repo" dst="$IDX/fresh/sub/index.json" first second
+  mkdir -p "$A"; index_make "$A"
+  AGENTS_INDEX_FILE="$dst" "$INDEX_CMD" refresh "$A" >/dev/null \
+    || { bad "$id" "index could not create the missing output dir (INDEX-7)"; return; }
+  [ -f "$dst" ] || { bad "$id" "output not written into a freshly-created dir (INDEX-7)"; return; }
+  ls "$IDX/fresh/sub/".index.*.tmp >/dev/null 2>&1 \
+    && { bad "$id" "temp file left beside output (write not atomic) (INDEX-7)"; return; }
+  python3 - "$dst" <<'PY' || { bad "$id" "provenance fields missing (INDEX-7)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["generated_at"] and d["tool"].startswith("index/")
+assert d["repos"] and d["repos"][0]["scanned_at"]
+assert d["repos"][0]["events_mtime"]              # this bus has an events.jsonl
+PY
+  first=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sorted((x["repo"],x["id"],x["state"]) for x in d["tasks"]))' "$dst")
+  AGENTS_INDEX_FILE="$dst" "$INDEX_CMD" refresh "$A" >/dev/null || { bad "$id" "second run failed (INDEX-7)"; return; }
+  second=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(sorted((x["repo"],x["id"],x["state"]) for x in d["tasks"]))' "$dst")
+  [ "$first" = "$second" ] \
+    && ok "$id" "creates missing dir; atomic (no tmp residue); provenance present; idempotent (INDEX-7)" \
+    || bad "$id" "second run diverged from first (INDEX-7)"
+}
+
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14
 c15; c16; c17; c18; c19; c20
+c21; c22; c23; c24
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
-# All 14 cases are live (0 stubs). A skip means a tool was missing from PATH or a
+# All 24 cases are live (0 stubs). A skip means a tool was missing from PATH or a
 # prerequisite failed — a misconfigured run, not a pass. Fail closed so a fully
 # skipped run can never report green (0 passed / 0 failed must not exit 0).
 [ "$FAIL" -eq 0 ] && [ "$SKIP" -eq 0 ] && [ "$PASS" -gt 0 ] || exit 1

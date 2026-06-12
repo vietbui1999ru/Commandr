@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# index — fold per-repo .agents/ buses into one global derived cache.
+#
+# SPEC v0.2 §13. The cache (~/.agents/index.json) is DERIVED and NEVER source
+# of truth (SPEC §9, blueprint decision 3): every field here projects a fact that
+# already exists on some repo's bus. Re-running rebuilds it from scratch; consumers
+# must treat it as possibly-stale and reconcile against the repo bus when it matters.
+#
+# Usage:
+#   index refresh [repo ...]
+#
+# Repo source: explicit args override; else the registry file (one path per line,
+# blank lines and #-comments skipped). Output and registry paths are overridable
+# for testing via AGENTS_INDEX_FILE / AGENTS_INDEX_REPOS (the conformance seam).
+#
+# A listed repo that is missing, has no .agents/, or is unreadable is recorded as
+# {"ok":false,...} and its tasks are omitted — one bad repo never fails the run.
+set -u
+
+usage() { printf 'usage: index refresh [repo ...]\n' >&2; exit 2; }
+
+[ "$#" -ge 1 ] || usage
+verb=$1; shift
+[ "$verb" = refresh ] || usage
+
+registry=${AGENTS_INDEX_REPOS:-$HOME/.agents/repos}
+out=${AGENTS_INDEX_FILE:-$HOME/.agents/index.json}
+
+# JSON string escape for values WE construct (paths, ids, errors, basenames).
+# Values extracted verbatim from existing bus JSON (note/verdict) are already
+# escaped and are spliced in as-is — re-escaping would double them.
+json_esc() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  printf '%s' "$s"
+}
+
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Resolve the repo list: positional args win; otherwise read the registry.
+repos=()
+if [ "$#" -gt 0 ]; then
+  repos=("$@")
+elif [ -f "$registry" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%#*}                      # strip comments
+    line=$(printf '%s' "$line" | tr -d '[:space:]')
+    [ -n "$line" ] && repos+=("$line")
+  done < "$registry"
+fi
+
+# Read the frontmatter `id:` of a packet (never the filename — SPEC PACKET/COUNCIL-3).
+packet_id() {
+  awk '
+    /^---[[:space:]]*$/ { f++; next }
+    f==1 && /^id:[[:space:]]*/ { sub(/^id:[[:space:]]*/, ""); gsub(/[[:space:]]+$/, ""); print; exit }
+    f>=2 { exit }
+  ' "$1"
+}
+
+repos_json=""
+tasks_json=""
+
+emit_repo() {  # <path> <scanned_at> <ok> <events_mtime|""> <error|"">
+  local rj
+  rj=$(printf '{"path":"%s","scanned_at":"%s","ok":%s' \
+        "$(json_esc "$1")" "$2" "$3")
+  [ -n "$4" ] && rj="$rj$(printf ',"events_mtime":"%s"' "$4")"
+  [ -n "$5" ] && rj="$rj$(printf ',"error":"%s"' "$(json_esc "$5")")"
+  rj="$rj}"
+  [ -n "$repos_json" ] && repos_json="$repos_json,"
+  repos_json="$repos_json$rj"
+}
+
+emit_task() {  # JSON object string
+  [ -n "$tasks_json" ] && tasks_json="$tasks_json,"
+  tasks_json="$tasks_json$1"
+}
+
+for repo in "${repos[@]}"; do
+  # Resolve the main checkout's bus, even from a worktree (LAYOUT-1).
+  bus=""
+  if gcd=$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null); then
+    case "$gcd" in /*) : ;; *) gcd="$repo/$gcd" ;; esac
+    bus="$(dirname "$gcd")/.agents"
+  else
+    bus="$repo/.agents"
+  fi
+
+  if [ ! -d "$bus" ]; then
+    emit_repo "$repo" "$now" false "" "no .agents/ at $bus"
+    continue
+  fi
+
+  events="$bus/events.jsonl"
+  emtime=""
+  [ -f "$events" ] && emtime=$(date -u -r "$events" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  emit_repo "$repo" "$now" true "$emtime" ""
+
+  rname=$(basename "$repo")
+
+  for sub in inbox claimed done; do
+    [ -d "$bus/$sub" ] || continue
+    state=$sub
+    for f in "$bus/$sub"/*.md; do
+      [ -e "$f" ] || continue
+      id=$(packet_id "$f")
+      [ -n "$id" ] || continue            # invalid packet (no id) — not indexable
+
+      # Owner identity from the claimed/done filename: {host}_{pid}_{orig} (CLAIM-2).
+      owner=""
+      if [ "$sub" != inbox ]; then
+        fn=$(basename "$f")
+        IFS=_ read -r oh op _ <<< "$fn"
+        [ -n "${oh:-}" ] && [ -n "${op:-}" ] && owner="${oh}_${op}"
+      fi
+
+      # Council verdict, if one was recorded for this task.
+      verdict=""
+      vf="$bus/council/$id.json"
+      [ -f "$vf" ] && verdict=$(sed -n 's/.*"verdict":"\([^"]*\)".*/\1/p' "$vf" | head -1)
+
+      # Latest bus signals for this task. `note` is always the trailing field of a
+      # task_progress line, so anchoring on `"}` at end-of-line extracts it cleanly.
+      last_ts=""
+      last_note=""
+      if [ -f "$events" ]; then
+        line=$(grep -F "\"task\":\"$id\"" "$events" | tail -1)
+        [ -n "$line" ] && last_ts=$(printf '%s' "$line" | sed -n 's/^{"ts":"\([^"]*\)".*/\1/p')
+        pline=$(grep -F '"event":"task_progress"' "$events" | grep -F "\"task\":\"$id\"" | tail -1)
+        [ -n "$pline" ] && last_note=$(printf '%s' "$pline" | sed -n 's/.*"note":"\(.*\)"}$/\1/p')
+      fi
+
+      # Assemble the task object. owner/verdict/last_* render as JSON null when absent.
+      obj=$(printf '{"repo":"%s","id":"%s","state":"%s"' \
+              "$(json_esc "$rname")" "$(json_esc "$id")" "$state")
+      if [ -n "$owner" ]; then obj="$obj$(printf ',"owner":"%s"' "$(json_esc "$owner")")"
+      else obj="$obj,\"owner\":null"; fi
+      if [ -n "$verdict" ]; then obj="$obj$(printf ',"verdict":"%s"' "$verdict")"
+      else obj="$obj,\"verdict\":null"; fi
+      if [ -n "$last_ts" ]; then obj="$obj$(printf ',"last_event_ts":"%s"' "$last_ts")"
+      else obj="$obj,\"last_event_ts\":null"; fi
+      if [ -n "$last_note" ]; then obj="$obj$(printf ',"last_note":"%s"' "$last_note")"
+      else obj="$obj,\"last_note\":null"; fi
+      obj="$obj}"
+      emit_task "$obj"
+    done
+  done
+done
+
+# Atomic replace: write a temp file beside the output, then rename over it.
+outdir=$(dirname "$out")
+mkdir -p "$outdir" || { printf 'index: cannot create %s\n' "$outdir" >&2; exit 1; }
+tmp="$outdir/.index.$$.tmp"
+{
+  printf '{"generated_at":"%s","tool":"index/0.2","repos":[%s],"tasks":[%s]}\n' \
+    "$now" "$repos_json" "$tasks_json"
+} > "$tmp" || { rm -f "$tmp"; printf 'index: write failed\n' >&2; exit 1; }
+mv -f "$tmp" "$out" || { rm -f "$tmp"; printf 'index: rename failed\n' >&2; exit 1; }
+
+printf 'index:%s\n' "$out"
+exit 0
