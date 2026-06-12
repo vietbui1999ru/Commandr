@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-12 (SPEC v0.2 §12.7 council diff mode landed — `bin/council --diff <range>|-` is bus-less; emits a verdict JSON on stdout with no `.agents/` side effect, the seam the `review-council` / `delegate-pi` wrappers build on; conformance C25–C27; suite now 27/0). Prior: §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` event + C15–C20).
+Last updated: 2026-06-12 (SPEC v0.2 §12.7 council diff mode landed — `bin/council --diff <range>|-` is bus-less; emits a verdict JSON on stdout with no `.agents/` side effect, the seam the `review-council` / `delegate-pi` wrappers build on; conformance C25–C27; suite now 27/0). Prior: §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` event + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, verified end-to-end across the bus, operator pairing guide in DiffViewer README, per issue #1).
 
 ## 1. What you are starting
 
@@ -207,6 +207,7 @@ Expected: 27 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | OC adapter (turn checkpoint via idle) | live | Phase 1 |
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |
 | DiffViewer sidecar ingestion (both harnesses) | live at test level; live e2e not yet exercised | Phase 2 |
+| Mobile companion MVP-0 (touch diff approve/reject) | desktop chain verified e2e (DiffViewer `c1d16b9`+`c5fbd08`): sidecar→ingest→WS push→approve→bus token→`pre-commit-gate` flips block→pass; reject + stale-digest (409) write nothing. Physical-phone+Tailscale leg operator-driven (README). Loopback `:3334`, Tailscale-only, single shared token | 2026-06-10 |
 | Adapters installed user-side (§3.3/3.4) | **pending** | — |
 | GitHub remote (Commandr → `vietbui1999ru/Commandr`, pushed) | live | 2026-06-09 |
 | DiffViewer remote (main ahead of origin, unpushed) | **pending user decision** | — |
