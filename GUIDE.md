@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-10 (SPEC v0.2 §12 council gate landed — `bin/council` advisory engine + `council_verdict` event + conformance C15–C20; suite now 20/0).
+Last updated: 2026-06-12 (SPEC v0.2 §13 index fold landed — `bin/index` derived cross-repo cache at `~/.agents/index.json` + conformance C21–C24; suite now 24/0). Prior: §12 council gate (`bin/council` + `council_verdict` event + C15–C20).
 
 ## 1. What you are starting
 
@@ -22,7 +22,8 @@ OpenCode) plug in through adapters; DiffViewer renders diffs as the L5 UI.
 |---|---|---|
 | Bus contract | `protocol/SPEC.md` (v0.1) | authoritative data shapes + invariants |
 | Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate` | operate the bus from any repo |
-| Conformance | `protocol/conformance.sh` | definition of done (C01–C20) |
+| Services | `bin/council` (advisory quality gate, §12), `bin/index` (derived cross-repo cache, §13) | run over the bus, never gate it |
+| Conformance | `protocol/conformance.sh` | definition of done (C01–C24) |
 | Harness adapters | `adapters/claude-code/`, `adapters/opencode/` (+ shared `adapters/lib/`) | project turn checkpoints / session end onto the bus |
 | Diff UI | `~/repos/DiffViewer` | watches `.diffviewer/turns/` sidecars, renders per-turn diff cards |
 
@@ -42,7 +43,7 @@ export PATH="$HOME/repos/Commandr/bin:$PATH"   # add to ~/.zshrc
 ```
 
 Alternative (no PATH change): every consumer accepts env overrides —
-`CLAIM_CMD`, `COMPLETE_CMD`, `GATE_CMD`, `PROGRESS_CMD`.
+`CLAIM_CMD`, `COMPLETE_CMD`, `GATE_CMD`, `PROGRESS_CMD`, `COUNCIL_CMD`, `INDEX_CMD`.
 
 ### 3.2 Bootstrap a repo onto the bus
 
@@ -148,6 +149,11 @@ complete .agents/claimed/<host>_<pid>_TASK-001.md pass   # or fail
 
 - Kanban board: `/kanban-status` skill (reads inbox/claimed/done + events).
 - Event log: `tail -f .agents/events.jsonl` — append-only, one JSON object per line.
+- Cross-repo view: `index refresh ~/repos/A ~/repos/B` folds many per-repo buses
+  into one derived cache at `~/.agents/index.json` (state, owner, council verdict,
+  last progress note per task). With no args it reads the registry `~/.agents/repos`
+  (one repo path per line). The cache is **derived, never source of truth** (SPEC §13) —
+  re-run to rebuild; reconcile against the repo bus when correctness matters.
 
 ## 5. DiffViewer (L5 UI)
 
@@ -170,22 +176,25 @@ and OpenCode sessions. Steer is clipboard-based (`POST /steer` → pbcopy).
 cd ~/repos/Commandr
 # Bus tools (explicit env form works without PATH setup):
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress COUNCIL_CMD=$PWD/bin/council \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
 protocol/conformance.sh
 
 # Adapter conformance (drives C13 through the driver verbs).
 # Driver paths MUST be absolute — conformance.sh cd's into a throwaway
 # fixture repo, so relative paths fail with "No such file or directory":
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress COUNCIL_CMD=$PWD/bin/council \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
 protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
 
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress COUNCIL_CMD=$PWD/bin/council \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
 protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 ```
 
-Expected: 20 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
+Expected: 24 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 `bash test/hooks.sh` and `bash test/install.sh`.
 
 ## 7. Current feature state — UPDATE THIS TABLE EVERY SESSION
@@ -193,7 +202,7 @@ Expected: 20 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Capability | Status | Since |
 |---|---|---|
 | Bus tools (`claim`/`complete`/`progress`/`pre-commit-gate`) | live, SPEC v0.1 | Phase 0 |
-| Conformance C01–C20 incl. `--adapter` drive | live; fails closed on any skip (0 stubs remain) | Phase 1 / 3 |
+| Conformance C01–C24 incl. `--adapter` drive | live; fails closed on any skip (0 stubs remain) | Phase 1 / 3 |
 | CC adapter (turn checkpoint + `session_end`) | live | Phase 1 |
 | OC adapter (turn checkpoint via idle) | live | Phase 1 |
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |
@@ -204,6 +213,7 @@ Expected: 20 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Quality Gate CI (markdownlint loose, aislop, conformance ×3, Copilot review on PRs) | live — `.github/workflows/quality-gate.yml` | 2026-06-09 |
 | `bin/council` (SPEC §12 advisory gate; `COUNCIL_EVALUATOR_CMD` seam; C15–C20) | live | Phase 3 |
 | `review-council` / `delegate-pi` rewired as thin wrappers over `bin/council` (decision 6) | not started — wrappers live in dotfiles, not this repo | — |
-| `bin/index`, `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
+| `bin/index` (SPEC §13 derived cross-repo cache; `AGENTS_INDEX_REPOS`/`AGENTS_INDEX_FILE` seam; C21–C24) | live | 2026-06-12 |
+| `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
 | llm-wiki sheds `claude-setup/` → dotfiles | not started (Phase 4) | — |
 | Tauri UI, multi-machine git-ref claims | not started (Phase 5) | — |

@@ -3,7 +3,7 @@
 The thin-waist contract for cross-harness agent coordination. Any driver harness (Claude Code, OpenCode, Codex, Pi), worker, UI, or human tooling interoperates with the bus exclusively through the on-disk formats defined here.
 
 **Scope (v0.1):** task queue + neutral progress + approvals + events. Single machine, single repo.
-**Added in v0.2:** the council quality gate (§12) — `bin/council`, the `council_verdict` event, and conformance C15–C20.
+**Added in v0.2:** the council quality gate (§12) — `bin/council`, the `council_verdict` event, conformance C15–C20; and the index fold (§13) — `bin/index`, the derived `~/.agents/index.json` cache, conformance C21–C24.
 **Out of scope:** multi-machine claiming (git-ref race, reserved), agent registry, dependency scheduling, timeout recovery, Windows.
 
 Normative keywords MUST / MUST NOT / SHOULD / MAY follow RFC 2119. Every MUST has a conformance check ID (§10).
@@ -111,7 +111,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 |---|---|
 | `.agents/council/` | council verdicts — one file per task, `<task-id>.json`: `{task, verdict, ts, votes[]}`. Contract is now live in §12 (v0.2). Supersedes ARCHITECTURE.md's two divergent sketches (per-task `.result` vs per-evaluator files). |
 | `.agents/registry.json` | agent fleet registry (v1) |
-| `~/.agents/index.json` | global derived cache across repos — written by `index` tool (contract deferred to v0.2), NEVER source of truth |
+| `~/.agents/index.json` | global derived cache across repos — written by `bin/index`, NEVER source of truth. Contract is now live in §13 (v0.2). |
 | `refs/tasks/*` | multi-machine claim race (v2) |
 
 ## 10. Conformance
@@ -140,6 +140,10 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | C18 council idempotent re-run | COUNCIL-9 (second run overwrites verdict; two `council_verdict` events) |
 | C19 council bus resolution | COUNCIL-2, COUNCIL-3 (CWD-independent; verdict + event land in main checkout) |
 | C20 council harness independence | COUNCIL-2 (runs with harness binaries stripped from PATH) |
+| C21 index fold | INDEX-1..4 (verb, stdout, bus resolution, task projection across two buses) |
+| C22 index derived-only | INDEX-5 (no cache inside repo buses; task shape is exactly the projection) |
+| C23 index bad repo | INDEX-6 (one missing/unreadable repo recorded, not fatal; good repos still fold) |
+| C24 index write discipline | INDEX-7 (creates missing dir; atomic, no tmp residue; provenance; idempotent) |
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
@@ -215,3 +219,44 @@ Let P = count of `PASS` votes.
 ### 12.7 Deferred to v0.3
 
 Strict fail-closed coupling (gate the approval token on a present-and-PASS verdict — the §7 APPROVAL-4 open question); a `council_start` event; a `model` field in the verdict file; `COUNCIL_EVAL_TIMEOUT` as a normative knob; runtime-configurable dimensions.
+
+## 13. Index Fold (derived cross-repo cache)
+
+**Added in v0.2.** `bin/index` folds many per-repo buses into one global cache at `~/.agents/index.json` for cross-repo views (blueprint decision 3). The cache is **strictly derived**: every field projects a fact that already exists on some repo's bus. It is NEVER a source of truth — consumers MUST treat it as possibly-stale and reconcile against the repo bus when correctness matters; re-running rebuilds it from scratch. Every MUST below has a conformance ID (§10).
+
+### 13.1 Invocation
+
+```
+index refresh [repo ...]
+```
+
+- **INDEX-1**: The only verb is `refresh`; any other verb, or a missing verb, MUST exit 2 (usage). The repo list is the positional arguments when any are given, otherwise the registry file (one repo path per line; blank lines and `#`-comments skipped). The registry path defaults to `~/.agents/repos` and the output path to `~/.agents/index.json`; both are overridable via `AGENTS_INDEX_REPOS` / `AGENTS_INDEX_FILE` — the conformance seam, mirroring `COUNCIL_EVALUATOR_CMD`. *(C21)*
+- **INDEX-2**: On success `index` MUST print `index:<output-path>\n` and exit 0. *(C21)*
+- **INDEX-3**: For each repo the bus MUST be resolved exactly as everywhere else (LAYOUT-1): `$(dirname "$(git rev-parse --git-common-dir)")/.agents` when the path is inside a git work tree, else `<repo>/.agents`. *(C21)*
+
+### 13.2 Projection
+
+The cache has two arrays. `repos[]` records each scanned repo: `path`, `scanned_at` (ISO 8601 UTC), `ok` (bool), and — when the bus was read — `events_mtime`; an unreadable repo additionally carries `error`. `tasks[]` records one object per indexable packet.
+
+- **INDEX-4**: Each task object MUST project, and project only, these bus facts:
+  - `repo` — the repo's basename.
+  - `id` — the packet frontmatter `id:` (never the filename; PACKET-1 / COUNCIL-3 precedent).
+  - `state` — `inbox` | `claimed` | `done`, from the packet's containing directory.
+  - `owner` — `{host}_{pid}` parsed from the claimed/done filename (CLAIM-2), or `null` in `inbox`.
+  - `verdict` — `PASS` | `FAIL` from `.agents/council/<id>.json` (§12.5), or `null` if none.
+  - `last_event_ts` — the `ts` of the last `events.jsonl` line naming this task, or `null`.
+  - `last_note` — the `note` of the last `task_progress` line naming this task, or `null`.
+  An absent value MUST render as JSON `null`, never be omitted, so the projection shape is fixed. *(C21)*
+
+### 13.3 Derived-only fence
+
+- **INDEX-5**: `index` MUST NOT write the cache — or any other file — into any scanned repo's `.agents/` (decision 3: the per-repo bus is the source of truth; the cache lives under `~/.agents/`). A task object MUST carry only the seven fields in INDEX-4 — no loop-internal or harness-private state (decision-4 fence). *(C22)*
+- **INDEX-6**: A listed repo that is missing, has no `.agents/`, or is unreadable MUST be recorded as `{"ok": false, …, "error": …}` with its tasks omitted, and MUST NOT fail the run — one bad repo never aborts the fold (exit 0). *(C23)*
+
+### 13.4 Write discipline
+
+- **INDEX-7**: The output MUST be written atomically (temp file on the same filesystem, then `mv` over the destination), creating the output directory when absent, and leaving no temp residue on the normal path. The fold MUST be idempotent: re-running over unchanged buses reproduces the same task projection. The output MUST carry provenance — a top-level `generated_at` and `tool`, plus per-repo `scanned_at` (and `events_mtime` when a log was read). *(C24)*
+
+### 13.5 Deferred to v0.3
+
+A registry-management verb (`index add` / `index list`); incremental refresh keyed on `events_mtime`; a `stale` flag computed against bus mtimes; per-repo task counts; a watching/daemonized refresh.
