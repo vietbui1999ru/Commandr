@@ -1,9 +1,10 @@
-# `.agents/` Bus Protocol — SPEC v0.2 (draft)
+# `.agents/` Bus Protocol — SPEC v0.3 (draft)
 
 The thin-waist contract for cross-harness agent coordination. Any driver harness (Claude Code, OpenCode, Codex, Pi), worker, UI, or human tooling interoperates with the bus exclusively through the on-disk formats defined here.
 
 **Scope (v0.1):** task queue + neutral progress + approvals + events. Single machine, single repo.
 **Added in v0.2:** the council quality gate (§12) — `bin/council`, the `council_verdict` event, conformance C15–C20; and the index fold (§13) — `bin/index`, the derived `~/.agents/index.json` cache, conformance C21–C24.
+**Added in v0.3:** the annotation loop (§14) — per-turn human notes injected as next-prompt context; the `task_annotation` event; `.agents/annotations/` on the bus. Conformance C28 is **reserved** (§10): it drives the bus tool `bin/annotate-write` via `ANNOT_WRITE_CMD` (mirroring how `COUNCIL_CMD` points at `bin/council`), so it joins the live suite only when that tool exists — the contract is defined here ahead of the tool, SPEC-first.
 **Out of scope:** multi-machine claiming (git-ref race, reserved), agent registry, dependency scheduling, timeout recovery, Windows.
 
 Normative keywords MUST / MUST NOT / SHOULD / MAY follow RFC 2119. Every MUST has a conformance check ID (§10).
@@ -26,11 +27,12 @@ Normative keywords MUST / MUST NOT / SHOULD / MAY follow RFC 2119. Every MUST ha
   approvals/    # <task-id>.approved tokens
   events.jsonl  # append-only event log
   council/      # RESERVED (v0.2) — verdict files
+  annotations/  # per-turn human annotation notes (§14, v0.3)
 ```
 
 - **LAYOUT-1**: The bus MUST live in the main checkout, never inside a worktree. From any worktree it is resolved as `$(dirname "$(git rev-parse --git-common-dir)")/.agents`.
 - **LAYOUT-2**: `inbox/`, `claimed/`, `done/`, `approvals/` MUST exist (`.gitkeep` permitted) before any bus operation.
-- **LAYOUT-3**: Git tracking policy: `inbox/*.md`, `done/*.md`, `.gitkeep` committed; `claimed/`, `approvals/`, `events.jsonl`, `council/` gitignored.
+- **LAYOUT-3**: Git tracking policy: `inbox/*.md`, `done/*.md`, `.gitkeep` committed; `claimed/`, `approvals/`, `events.jsonl`, `council/`, `annotations/` gitignored.
 
 ## 3. Mission Packet
 
@@ -81,6 +83,7 @@ Defined events:
 {"ts": "<ISO8601>", "event": "task_failed",   "task": "<task-id>", "agent": "<agent-id>", "reason": "<description>"}
 {"ts": "<ISO8601>", "event": "session_end",   "session": "<session-id>", "task?": "<task-id>", "files_changed?": 0, "tests_summary?": "<string>", "exit_status?": 0}
 {"ts": "<ISO8601>", "event": "council_verdict", "task": "<task-id>", "verdict": "PASS" | "FAIL", "evaluator_count": 3, "abstentions": 0}
+{"ts": "<ISO8601>", "event": "task_annotation", "task": "<task-id>", "turn": 0, "anchor": "<anchor>", "author": "<author>", "seq": 0}
 ```
 
 - **EVENT-4** (*neutral progress*): `task_progress` notes MUST be harness-neutral — human-readable status a viewer can render without knowing the harness. Loop-internal state (tool calls, token counts, harness session structure) MUST NOT be written to the bus; adapters project milestones only.
@@ -110,6 +113,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | Path / ref | Reserved for |
 |---|---|
 | `.agents/council/` | council verdicts — one file per task, `<task-id>.json`: `{task, verdict, ts, votes[]}`. Contract is now live in §12 (v0.2). Supersedes ARCHITECTURE.md's two divergent sketches (per-task `.result` vs per-evaluator files). |
+| `.agents/annotations/` | per-turn annotation notes — `<task-id>/<turn>-<seq>.json`: `{task, turn, anchor, ts, author, body, consumed}`. Contract live in §14 (v0.3). |
 | `.agents/registry.json` | agent fleet registry (v1) |
 | `~/.agents/index.json` | global derived cache across repos — written by `bin/index`, NEVER source of truth. Contract is now live in §13 (v0.2). |
 | `refs/tasks/*` | multi-machine claim race (v2) |
@@ -147,6 +151,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | C25 council diff bus-less | COUNCIL-12, COUNCIL-14 (range mode → verdict JSON on stdout; no `.agents/` file or event created) |
 | C26 council diff stdin | COUNCIL-13, COUNCIL-14 (stdin diff; seam invoked 3×; exactly three Vote objects) |
 | C27 council diff edges | COUNCIL-15 (empty diff → all-ABSTAIN FAIL, exit 0; unresolvable range → exit 1, nothing on stdout) |
+| C28 annotation loop *(reserved — lands with the write-helper)* | ANNOT-1..7 (exclusive-create; event append; `annotations/` allowlist; EVENT-3; consumed flag). Drives a real write-helper via `ANNOT_WRITE_CMD`; NOT in the live suite (C01–C27) until that tool exists. |
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
@@ -158,6 +163,7 @@ Modes: `conformance.sh` (test bus tools alone) · `conformance.sh --adapter <cmd
 2. Claim/complete live in Commandr `bin/` on PATH, not per-project `scripts/` (supersedes ARCHITECTURE.md Placement section and PRD v0.5 §Command Contracts paths).
 3. Event-emission responsibility restated as an invariant (CLAIM-4/COMPLETE-2) rather than "caller appends" — same behavior, testable cross-harness.
 4. Claimed-filename separator is `_`, not `-` (supersedes PRD v0.5 §Claimed Filename Format and the ARCHITECTURE.md claim.sh sketch): left-splitting on `-` is ambiguous because hostnames (`ip-10-0-1-100`) and task ids (`TASK-001`) both contain dashes.
+5. OpenCode auto-injection of annotation context (§14) is not native to the bus. The annotation artifact is harness-neutral — any harness can read `.agents/annotations/<task>/<turn>-<seq>.json` and prepend `body` fields to the next user prompt. Claude Code implements this via a `UserPromptSubmit` hook; OpenCode's MVP fallback is a manual skill-echo, with full parity reachable post-MVP via a `chat.message` plugin or an HTTP proxy in front of `opencode --serve`. Neither requires forking OpenCode.
 
 ## 12. Council Quality Gate
 
@@ -276,6 +282,86 @@ The cache has two arrays. `repos[]` records each scanned repo: `path`, `scanned_
 
 - **INDEX-7**: The output MUST be written atomically (temp file on the same filesystem, then `mv` over the destination), creating the output directory when absent, and leaving no temp residue on the normal path. The fold MUST be idempotent: re-running over unchanged buses reproduces the same task projection. The output MUST carry provenance — a top-level `generated_at` and `tool`, plus per-repo `scanned_at` (and `events_mtime` when a log was read). *(C24)*
 
-### 13.5 Deferred to v0.3
+### 13.5 Deferred to v0.4
 
 A registry-management verb (`index add` / `index list`); incremental refresh keyed on `events_mtime`; a `stale` flag computed against bus mtimes; per-repo task counts; a watching/daemonized refresh.
+
+## 14. Annotation Loop
+
+**Added in v0.3.** The annotation loop lets a human attach card-anchored notes to a rendered agent turn in the DiffViewer browser pane; the next prompt the agent receives carries those notes as prepended context. The bus artifact is harness-neutral. Injection is a harness-side convenience layered on top of the artifact; the bus makes no assumptions about which harness consumes it or how. Conformance for this section is case **C28** (§10), **reserved until the write-helper lands**: C28 drives the bus tool `bin/annotate-write` through the `ANNOT_WRITE_CMD` seam (mirroring how `COUNCIL_CMD` points at `bin/council`), so it joins the live suite only when that tool exists. The contract below is defined ahead of the tool (SPEC-first); each MUST cites C28 as its eventual check.
+
+### 14.1 Artifact layout
+
+```
+<main-checkout>/.agents/annotations/
+  <task-id>/
+    <turn>-<seq>.json      # one file per annotation
+```
+
+- `<task-id>` — the frontmatter `id` of the task being annotated (PACKET-1 / COUNCIL-3 precedent; never the filename).
+- `<turn>` — zero-padded 4-digit decimal turn counter matching the turn index the annotated diff was captured from (e.g. `0003`).
+- `<seq>` — zero-padded 4-digit decimal sequence number within a turn, starting at `0000`, allowing multiple annotations on the same turn from the same or different authors.
+
+- **ANNOT-1**: The `.agents/annotations/` directory is gitignored and derived (same policy as `.agents/council/` per LAYOUT-3). Its contents MUST NOT be committed. *(C28)*
+
+### 14.2 Artifact shape
+
+Each annotation file MUST be valid JSON containing exactly these top-level fields and no others:
+
+| Field | Type | Description |
+|---|---|---|
+| `task` | string | Task id (COUNCIL-3 precedent). |
+| `turn` | integer | Turn index the annotation targets. |
+| `anchor` | string | Card-level anchor, e.g. `"card:src/pay.ts"` or `"general"`. |
+| `ts` | string | ISO 8601 UTC write timestamp. |
+| `author` | string | Free-form author identifier (e.g. `"human"`, a username). |
+| `body` | string | Markdown annotation text. MAY be empty string. |
+| `consumed` | boolean | `false` on write; flipped to `true` by the injecting hook after the note has been prepended to a prompt. |
+
+```json
+{
+  "task": "TASK-001",
+  "turn": 3,
+  "anchor": "card:src/pay.ts",
+  "ts": "2026-06-15T09:00:00Z",
+  "author": "human",
+  "body": "The retry logic here should cap at 3 attempts — see ADR-12.",
+  "consumed": false
+}
+```
+
+- **ANNOT-2**: Readers MUST tolerate unknown fields (PACKET-2 precedent); writers MUST NOT add fields beyond those listed (decision-4 fence). *(C28)*
+- **ANNOT-3**: The annotation set is **additive** — each write creates a new file; existing annotation files MUST NOT be overwritten or deleted by the write path (exclusive-create `O_CREAT|O_EXCL` / `wx`). This is distinct from the council verdict (COUNCIL-9), which is idempotent by overwrite. Annotations accumulate; verdicts replace. *(C28)*
+- **ANNOT-4**: There is **no digest-binding**. Annotations are course-correction hints, not decisive gates; a stale note is less harmful than a blocked write path. The write helper MUST NOT reject an annotation because the underlying diff has changed.
+
+### 14.3 Write path
+
+The canonical writer is the bus tool **`bin/annotate-write`** (Commandr), alongside `claim`/`complete`/`council`/`index` — writing a bus artifact is bus-layer work. The DiffViewer `POST /annotate` endpoint and any other surface (mobile, future UIs) shell to it (the bus-tools-on-PATH convention). Conformance drives it directly through `ANNOT_WRITE_CMD` (§10, the same pattern as `COUNCIL_CMD` → `bin/council`).
+
+- **ANNOT-5**: The write helper MUST create the annotation file with exclusive-create semantics (`O_CREAT|O_EXCL` or equivalent), then — in the same logical operation — append exactly one `task_annotation` event (§6, ANNOT-7) to `.agents/events.jsonl`. If the exclusive-create fails (file already exists), the writer MUST retry with the next `<seq>` until the write succeeds or a bounded retry limit is reached (implementations SHOULD allow at least 16 retries; beyond that the request MUST be rejected with an error). The event append MUST follow a successful file write, never precede it. *(C28)*
+- **ANNOT-6**: The writer is a single bus tool, shared by every surface (desktop `POST /annotate`, mobile, future UIs) by being invoked as a subprocess. The bus path (`.agents/annotations/<task>/`) MUST be resolved from the writer's `--bus` argument (the `.agents` directory) or from the task id + bus root (LAYOUT-1), never hardcoded. *(C28)*
+- **ANNOT-7**: The `task_annotation` event (§6) MUST carry `task`, `turn` (integer), `anchor`, `author`, and `seq` (integer — the `<seq>` that was written). The `body` MUST NOT appear in the event (decision-4 fence: full content lives in the artifact file). `task_annotation` is a defined event type (EVENT-3). *(C28)*
+
+### 14.4 Injection (harness-side, advisory)
+
+Injection is not enforced by conformance — it is a harness-side convention layered on the neutral artifact, documented so adapters implement it consistently.
+
+The injecting hook (e.g. Claude Code `UserPromptSubmit`):
+
+1. Scans `.agents/annotations/<task>/` for files where `"consumed": false`.
+2. Prepends each matching `body` to the human's outgoing prompt, in ascending `<turn>-<seq>` file order, as a clearly-labelled context block.
+3. Rewrites `"consumed": true` in-place in each consumed file.
+4. Emits the modified prompt to the harness.
+
+- **ANNOT-8**: The injecting hook MUST write `"consumed": true` only after the body has actually been injected (for synchronous hooks, immediately before returning the modified prompt). A crash between dispatch and the consumed-flip leaves a note unconsumed and eligible for re-injection — acceptable (additive, idempotent hint) and preferred to silent loss.
+- **ANNOT-9**: The injecting hook MUST NOT write new annotation files, MUST NOT append events, and MUST NOT alter any field other than `consumed`. The hook is a reader+consumer, not a bus writer.
+
+### 14.5 Auto-open policy
+
+The DiffViewer sidecar surfaces the browser pane in response to a bus signal (the arrival of a new turn for a task). It MUST NOT be driven by the harness directly (decision 5: the viewer reacts to the bus; the harness stays out).
+
+Policy **OPEN-ONCE-THEN-NOTIFY**: on the first turn the sidecar observes for a given session it opens and focuses the DiffViewer tab; on every subsequent turn in the same session it sends an OS notification (and badge where supported) instead of stealing focus. This is implementation guidance, not a conformance requirement, and carries no conformance case.
+
+### 14.6 Deferred to v0.4
+
+Cross-session note archive (the "it learns me" L4 knowledge-layer feature — an optional hook that copies consumed notes to a persistent store); prose/conversational turn capture (requires a per-turn bus artifact carrying the agent's full turn text, which does not exist today); annotation expiry / garbage collection; multi-author conflict resolution.

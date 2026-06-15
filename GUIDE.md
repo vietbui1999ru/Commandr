@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-12 (SPEC v0.2 §12.7 council diff mode landed — `bin/council --diff <range>|-` is bus-less; emits a verdict JSON on stdout with no `.agents/` side effect, the seam the `review-council` / `delegate-pi` wrappers build on; conformance C25–C27; suite now 27/0). Prior: §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` event + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, verified end-to-end across the bus, operator pairing guide in DiffViewer README, per issue #1).
+Last updated: 2026-06-15 (SPEC v0.3 §14 annotation loop merged — per-turn human notes injected as next-prompt context; `task_annotation` event + `.agents/annotations/` defined; conformance **C28 reserved** until the annotation write-helper lands, so the live suite is still 27/0. Prior: SPEC v0.2 §12.7 council diff mode — `bin/council --diff <range>|-` bus-less verdict JSON on stdout, C25–C27; §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, per issue #1).
 
 ## 1. What you are starting
 
@@ -20,7 +20,7 @@ OpenCode) plug in through adapters; DiffViewer renders diffs as the L5 UI.
 
 | Piece | Where | Role |
 |---|---|---|
-| Bus contract | `protocol/SPEC.md` (v0.1) | authoritative data shapes + invariants |
+| Bus contract | `protocol/SPEC.md` (v0.3) | authoritative data shapes + invariants |
 | Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate` | operate the bus from any repo |
 | Services | `bin/council` (advisory quality gate, §12), `bin/index` (derived cross-repo cache, §13) | run over the bus, never gate it |
 | Conformance | `protocol/conformance.sh` | definition of done (C01–C27) |
@@ -214,6 +214,7 @@ Expected: 27 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Quality Gate CI (markdownlint loose, aislop, conformance ×3, Copilot review on PRs) | live — `.github/workflows/quality-gate.yml` | 2026-06-09 |
 | `bin/council` (SPEC §12 advisory gate; `COUNCIL_EVALUATOR_CMD` seam; C15–C20) | live | Phase 3 |
 | `bin/council --diff <range>\|-` (SPEC §12.7 bus-less diff mode; verdict JSON on stdout; C25–C27) | live | 2026-06-12 |
+| Annotation loop (SPEC §14 — per-turn notes → next-prompt inject) | **spec'd v0.3; C28 reserved, write-helper pending** | 2026-06-15 |
 | `review-council` / `delegate-pi` rewired as thin wrappers over `bin/council` (decision 6) | not started — wrappers live in dotfiles, not this repo | — |
 | `bin/index` (SPEC §13 derived cross-repo cache; `AGENTS_INDEX_REPOS`/`AGENTS_INDEX_FILE` seam; C21–C24) | live | 2026-06-12 |
 | `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
