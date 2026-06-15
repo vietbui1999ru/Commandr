@@ -8,7 +8,7 @@
 #                                     # (driver verbs: capabilities, turn-end <dir>,
 #                                     #  session-end <dir> <sid> — see c13_adapter)
 #
-# Status: C01-C27 live, including the adapter-mode C13 drive, the §12 council gate,
+# Status: C01-C28 live, including the adapter-mode C13 drive, the §12 council gate,
 # and the §13 index fold.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
@@ -22,6 +22,7 @@ GATE_CMD=${GATE_CMD:-pre-commit-gate}
 PROGRESS_CMD=${PROGRESS_CMD:-progress}
 COUNCIL_CMD=${COUNCIL_CMD:-council}
 INDEX_CMD=${INDEX_CMD:-index}
+ANNOT_WRITE_CMD=${ANNOT_WRITE_CMD:-annotate-write}
 export PROGRESS_CMD   # adapters resolve their emitter through this in adapter mode
 ADAPTER_CMD=""
 while [ $# -gt 0 ]; do
@@ -50,7 +51,7 @@ trap 'rm -rf "$FIXTURE" "$FIXTURE-wt" "$IDX"' EXIT
 cd "$FIXTURE"
 git init -q -b main .
 mkdir -p .agents/{inbox,claimed,done,approvals}
-printf '.agents/claimed/\n.agents/approvals/\n.agents/events.jsonl\n.agents/council/\n' > .gitignore
+printf '.agents/claimed/\n.agents/approvals/\n.agents/events.jsonl\n.agents/council/\n.agents/annotations/\n' > .gitignore
 git add -A && git -c user.email=conf@test -c user.name=conformance commit -qm 'fixture'
 
 make_packet() { # make_packet <id>
@@ -536,19 +537,21 @@ PY
     [ -e "$f" ] || continue
     b=$(basename "$f")
     case "$b" in
-      inbox|claimed|done|approvals|council|events.jsonl|registry.json) ;;
+      inbox|claimed|done|approvals|council|annotations|events.jsonl|registry.json) ;;
       *) bad "$id" "unexpected entry under .agents/: $b (ADAPTER-2)"; return ;;
     esac
   done
   # ...and nothing smuggled INSIDE the spec'd directories: no subdirectories,
   # and every nested file must match its directory's content type.
   local viol
-  viol=$(find .agents -mindepth 2 -type d 2>/dev/null | head -1)
+  # annotations/<task-id>/ is the one spec'd nested directory (§14.1); deeper dirs are not.
+  viol=$(find .agents -mindepth 2 -type d 2>/dev/null | grep -v '^\.agents/annotations/[^/]*$' | head -1)
   [ -n "$viol" ] && { bad "$id" "unexpected directory under .agents/: $viol (ADAPTER-2)"; return; }
   viol=$(find .agents -mindepth 2 -type f 2>/dev/null | while read -r p; do
     case "$p" in
       .agents/inbox/*.md|.agents/claimed/*.md|.agents/done/*.md) ;;
       .agents/approvals/*.approved|.agents/council/*.json) ;;
+      .agents/annotations/*/*.json) ;;
       *) printf '%s\n' "$p" ;;
     esac
   done | head -1)
@@ -870,13 +873,90 @@ PY
     || bad "$id" "bad range: rc=$rc stdout='$out', expected rc=1 and empty (COUNCIL-15)"
 }
 
+c28() { # ANNOT-1..7: annotation exclusive-create + next-seq, event append, gitignore, allowlist, EVENT-3
+  local id="C28-annotation"
+  have "$ANNOT_WRITE_CMD" || { skip "$id" "$ANNOT_WRITE_CMD not on PATH"; return; }
+  have python3 || { skip "$id" "python3 unavailable"; return; }
+
+  local bus="$FIXTURE/.agents"
+  rm -rf "$bus/annotations"
+  : > "$bus/events.jsonl"   # c28 runs last; isolate its events from the c14 unknown-type injection
+
+  # ANNOT-1 / LAYOUT-3: annotations/ is gitignored.
+  grep -qxF '.agents/annotations/' .gitignore \
+    || { bad "$id" ".agents/annotations/ not gitignored (ANNOT-1/LAYOUT-3)"; return; }
+
+  # first write — the writer assigns seq 0000 server-side.
+  local out rc f
+  out=$("$ANNOT_WRITE_CMD" --bus "$bus" --task TASK-C28 --turn 3 \
+        --anchor "card:src/pay.ts" --author human --body 'Cap retries at 3.'); rc=$?
+  [ $rc -eq 0 ] || { bad "$id" "write helper exited $rc: $out"; return; }
+  f="$bus/annotations/TASK-C28/0003-0000.json"
+  [ -f "$f" ] || { bad "$id" "artifact not at expected path: $f"; return; }
+
+  # ANNOT-2: exactly the seven fields; consumed:false on write.
+  python3 - "$f" <<'PY' || { bad "$id" "artifact shape wrong (ANNOT-2)"; return; }
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert set(d)=={"task","turn","anchor","ts","author","body","consumed"}, set(d)
+assert d["task"]=="TASK-C28" and d["turn"]==3 and d["consumed"] is False
+assert d["anchor"]=="card:src/pay.ts" and d["body"]=="Cap retries at 3."
+PY
+
+  # ANNOT-7 + EVENT-2/3: exactly one task_annotation event; author+seq present, body
+  # absent, turn/seq integers; every log line valid JSON with a defined event type.
+  python3 - "$bus/events.jsonl" <<'PY' || { bad "$id" "event shape/log invalid (ANNOT-7/EVENT-2/3)"; return; }
+import json,sys
+DEFINED={"task_claimed","task_progress","task_complete","task_failed","session_end","council_verdict","task_annotation"}
+seen=0
+for line in open(sys.argv[1]):
+    if not line.strip(): continue
+    e=json.loads(line)
+    assert "ts" in e and "event" in e and e["event"] in DEFINED
+    if e["event"]=="task_annotation":
+        seen+=1
+        assert "body" not in e
+        assert isinstance(e["turn"],int) and isinstance(e["seq"],int)
+        assert e["task"]=="TASK-C28" and e["author"]=="human"
+assert seen==1, seen
+PY
+
+  # ANNOT-3/5: a second write on the same turn takes the next seq, never clobbers 0000.
+  "$ANNOT_WRITE_CMD" --bus "$bus" --task TASK-C28 --turn 3 \
+        --anchor general --author human --body 'Second note.' >/dev/null \
+    || { bad "$id" "second write failed"; return; }
+  [ -f "$bus/annotations/TASK-C28/0003-0001.json" ] \
+    || { bad "$id" "second annotation not at next seq 0003-0001.json (ANNOT-3/5)"; return; }
+  grep -q 'Cap retries at 3\.' "$f" \
+    || { bad "$id" "first annotation overwritten by the second (ANNOT-3)"; return; }
+
+  # ADAPTER-2 allowlist: annotations/ is an accepted bus dir; nested files match
+  # annotations/<task>/<turn>-<seq>.json; the only nested dir is the per-task dir.
+  local viol
+  viol=$(find "$bus" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r p; do
+    case "$(basename "$p")" in
+      inbox|claimed|done|approvals|council|annotations) ;;
+      *) printf '%s\n' "$(basename "$p")" ;;
+    esac
+  done | head -1)
+  [ -z "$viol" ] || { bad "$id" "unexpected bus dir: $viol (ADAPTER-2)"; return; }
+  viol=$(find "$bus/annotations" -mindepth 1 -type f 2>/dev/null | while read -r p; do
+    case "$p" in */annotations/*/*.json) ;; *) printf '%s\n' "$p" ;; esac
+  done | head -1)
+  [ -z "$viol" ] || { bad "$id" "unexpected file under annotations/: $viol (ADAPTER-2)"; return; }
+
+  rm -rf "$bus/annotations"
+  ok "$id" "exclusive-create + next-seq; task_annotation event (author+seq, no body); gitignored; allowlist (ANNOT-1..7, EVENT-2/3, ADAPTER-2)"
+}
+
 # --- run -----------------------------------------------------------------------
 c01; c02; c03; c04; c05; c06; c07; c08; c09; c10; c11; c12; c13; c14
 c15; c16; c17; c18; c19; c20
 c21; c22; c23; c24
 c25; c26; c27
+c28
 printf '\n%d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
-# All 27 cases are live (0 stubs). A skip means a tool was missing from PATH or a
+# All 28 cases are live (0 stubs). A skip means a tool was missing from PATH or a
 # prerequisite failed — a misconfigured run, not a pass. Fail closed so a fully
 # skipped run can never report green (0 passed / 0 failed must not exit 0).
 [ "$FAIL" -eq 0 ] && [ "$SKIP" -eq 0 ] && [ "$PASS" -gt 0 ] || exit 1

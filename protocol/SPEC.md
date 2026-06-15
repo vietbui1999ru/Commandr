@@ -4,7 +4,7 @@ The thin-waist contract for cross-harness agent coordination. Any driver harness
 
 **Scope (v0.1):** task queue + neutral progress + approvals + events. Single machine, single repo.
 **Added in v0.2:** the council quality gate (§12) — `bin/council`, the `council_verdict` event, conformance C15–C20; and the index fold (§13) — `bin/index`, the derived `~/.agents/index.json` cache, conformance C21–C24.
-**Added in v0.3:** the annotation loop (§14) — per-turn human notes injected as next-prompt context; the `task_annotation` event; `.agents/annotations/` on the bus. Conformance C28 is **reserved** (§10): it drives the bus tool `bin/annotate-write` via `ANNOT_WRITE_CMD` (mirroring how `COUNCIL_CMD` points at `bin/council`), so it joins the live suite only when that tool exists — the contract is defined here ahead of the tool, SPEC-first.
+**Added in v0.3:** the annotation loop (§14) — per-turn human notes injected as next-prompt context; the `task_annotation` event; `.agents/annotations/` on the bus. Conformance **C28** drives the bus tool `bin/annotate-write` via `ANNOT_WRITE_CMD` (mirroring how `COUNCIL_CMD` points at `bin/council`); the suite is now **28/0**.
 **Out of scope:** multi-machine claiming (git-ref race, reserved), agent registry, dependency scheduling, timeout recovery, Windows.
 
 Normative keywords MUST / MUST NOT / SHOULD / MAY follow RFC 2119. Every MUST has a conformance check ID (§10).
@@ -151,7 +151,7 @@ A conformant adapter, per session: claim (or receive pre-claimed packet) → emi
 | C25 council diff bus-less | COUNCIL-12, COUNCIL-14 (range mode → verdict JSON on stdout; no `.agents/` file or event created) |
 | C26 council diff stdin | COUNCIL-13, COUNCIL-14 (stdin diff; seam invoked 3×; exactly three Vote objects) |
 | C27 council diff edges | COUNCIL-15 (empty diff → all-ABSTAIN FAIL, exit 0; unresolvable range → exit 1, nothing on stdout) |
-| C28 annotation loop *(reserved — lands with the write-helper)* | ANNOT-1..7 (exclusive-create; event append; `annotations/` allowlist; EVENT-3; consumed flag). Drives a real write-helper via `ANNOT_WRITE_CMD`; NOT in the live suite (C01–C27) until that tool exists. |
+| C28 annotation loop | ANNOT-1..7 (exclusive-create; next-seq; event append; `annotations/` allowlist; EVENT-2/3; consumed flag). Drives `bin/annotate-write` via `ANNOT_WRITE_CMD`. |
 
 Not mechanically testable — verified by design review, not by this script: ADAPTER-1 (constrains adapter reasoning, not filesystem output), EVENT-6 (filesystem locality), EVENT-4 beyond C09's heuristic.
 
@@ -288,7 +288,7 @@ A registry-management verb (`index add` / `index list`); incremental refresh key
 
 ## 14. Annotation Loop
 
-**Added in v0.3.** The annotation loop lets a human attach card-anchored notes to a rendered agent turn in the DiffViewer browser pane; the next prompt the agent receives carries those notes as prepended context. The bus artifact is harness-neutral. Injection is a harness-side convenience layered on top of the artifact; the bus makes no assumptions about which harness consumes it or how. Conformance for this section is case **C28** (§10), **reserved until the write-helper lands**: C28 drives the bus tool `bin/annotate-write` through the `ANNOT_WRITE_CMD` seam (mirroring how `COUNCIL_CMD` points at `bin/council`), so it joins the live suite only when that tool exists. The contract below is defined ahead of the tool (SPEC-first); each MUST cites C28 as its eventual check.
+**Added in v0.3.** The annotation loop lets a human attach card-anchored notes to a rendered agent turn in the DiffViewer browser pane; the next prompt the agent receives carries those notes as prepended context. The bus artifact is harness-neutral. Injection is a harness-side convenience layered on top of the artifact; the bus makes no assumptions about which harness consumes it or how. Conformance for this section is case **C28** (§10), which drives the bus tool `bin/annotate-write` through the `ANNOT_WRITE_CMD` seam (mirroring how `COUNCIL_CMD` points at `bin/council`). Each MUST below cites C28 as its check.
 
 ### 14.1 Artifact layout
 
