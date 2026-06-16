@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-12 (SPEC v0.2 §12.7 council diff mode landed — `bin/council --diff <range>|-` is bus-less; emits a verdict JSON on stdout with no `.agents/` side effect, the seam the `review-council` / `delegate-pi` wrappers build on; conformance C25–C27; suite now 27/0). Prior: §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` event + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, verified end-to-end across the bus, operator pairing guide in DiffViewer README, per issue #1).
+Last updated: 2026-06-15 (SPEC v0.3 §14 annotation loop merged — per-turn human notes injected as next-prompt context; `task_annotation` event + `.agents/annotations/` defined; the annotation write-helper `bin/annotate-write` landed and **C28 is live — suite now 28/0**. Prior: SPEC v0.2 §12.7 council diff mode — `bin/council --diff <range>|-` bus-less verdict JSON on stdout, C25–C27; §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, per issue #1).
 
 ## 1. What you are starting
 
@@ -20,10 +20,10 @@ OpenCode) plug in through adapters; DiffViewer renders diffs as the L5 UI.
 
 | Piece | Where | Role |
 |---|---|---|
-| Bus contract | `protocol/SPEC.md` (v0.1) | authoritative data shapes + invariants |
-| Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate` | operate the bus from any repo |
+| Bus contract | `protocol/SPEC.md` (v0.3) | authoritative data shapes + invariants |
+| Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate`, `bin/annotate-write` | operate the bus from any repo |
 | Services | `bin/council` (advisory quality gate, §12), `bin/index` (derived cross-repo cache, §13) | run over the bus, never gate it |
-| Conformance | `protocol/conformance.sh` | definition of done (C01–C27) |
+| Conformance | `protocol/conformance.sh` | definition of done (C01–C28) |
 | Harness adapters | `adapters/claude-code/`, `adapters/opencode/` (+ shared `adapters/lib/`) | project turn checkpoints / session end onto the bus |
 | Diff UI | `~/repos/DiffViewer` | watches `.diffviewer/turns/` sidecars, renders per-turn diff cards |
 
@@ -43,7 +43,7 @@ export PATH="$HOME/repos/Commandr/bin:$PATH"   # add to ~/.zshrc
 ```
 
 Alternative (no PATH change): every consumer accepts env overrides —
-`CLAIM_CMD`, `COMPLETE_CMD`, `GATE_CMD`, `PROGRESS_CMD`, `COUNCIL_CMD`, `INDEX_CMD`.
+`CLAIM_CMD`, `COMPLETE_CMD`, `GATE_CMD`, `PROGRESS_CMD`, `COUNCIL_CMD`, `INDEX_CMD`, `ANNOT_WRITE_CMD`.
 
 ### 3.2 Bootstrap a repo onto the bus
 
@@ -178,6 +178,7 @@ cd ~/repos/Commandr
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
 GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
 COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
+ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
 protocol/conformance.sh
 
 # Adapter conformance (drives C13 through the driver verbs).
@@ -186,15 +187,17 @@ protocol/conformance.sh
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
 GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
 COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
+ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
 protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
 
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
 GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
 COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
+ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
 protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 ```
 
-Expected: 27 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
+Expected: 28 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 `bash test/hooks.sh` and `bash test/install.sh`.
 
 ## 7. Current feature state — UPDATE THIS TABLE EVERY SESSION
@@ -202,7 +205,7 @@ Expected: 27 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Capability | Status | Since |
 |---|---|---|
 | Bus tools (`claim`/`complete`/`progress`/`pre-commit-gate`) | live, SPEC v0.1 | Phase 0 |
-| Conformance C01–C27 incl. `--adapter` drive | live; fails closed on any skip (0 stubs remain) | Phase 1 / 3 |
+| Conformance C01–C28 incl. `--adapter` drive | live; fails closed on any skip (0 stubs remain) | Phase 1 / 3 |
 | CC adapter (turn checkpoint + `session_end`) | live | Phase 1 |
 | OC adapter (turn checkpoint via idle) | live | Phase 1 |
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |
@@ -214,6 +217,7 @@ Expected: 27 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Quality Gate CI (markdownlint loose, aislop, conformance ×3, Copilot review on PRs) | live — `.github/workflows/quality-gate.yml` | 2026-06-09 |
 | `bin/council` (SPEC §12 advisory gate; `COUNCIL_EVALUATOR_CMD` seam; C15–C20) | live | Phase 3 |
 | `bin/council --diff <range>\|-` (SPEC §12.7 bus-less diff mode; verdict JSON on stdout; C25–C27) | live | 2026-06-12 |
+| Annotation loop (SPEC §14): writer `bin/annotate-write` + conformance C28 | **live (bus write path; suite 28/0)** — DiffViewer `POST /annotate` + per-card UI + `UserPromptSubmit` hook still pending (plan Steps 2-HTTP–5) | 2026-06-15 |
 | `review-council` / `delegate-pi` rewired as thin wrappers over `bin/council` (decision 6) | not started — wrappers live in dotfiles, not this repo | — |
 | `bin/index` (SPEC §13 derived cross-repo cache; `AGENTS_INDEX_REPOS`/`AGENTS_INDEX_FILE` seam; C21–C24) | live | 2026-06-12 |
 | `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |

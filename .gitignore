@@ -3,6 +3,7 @@
 .agents/approvals/
 .agents/events.jsonl
 .agents/council/
+.agents/annotations/
 
 # machine-local Claude Code config (headroom proxy env + hooks)
 .claude/settings.local.json
