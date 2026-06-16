@@ -331,7 +331,7 @@ The callbacks are passed from `server.js` and are no-ops in tests, so no test ch
 
 **Conformance verification:** `bash /Users/vietquocbui/repos/Commandr/protocol/conformance.sh` → 28 pass, 0 fail.
 
-**DiffViewer test verification:** `npx vitest run` in `/Users/vietquocbui/repos/DiffViewer` → all tests pass (previously 52; new count includes ANN-* and SW-OPEN-* additions).
+**DiffViewer test verification:** `npx vitest run` in `/Users/vietquocbui/repos/DiffViewer` → all tests pass (previously 52; new count includes `ANN-*` and `SW-OPEN-*` additions).
 
 **GUIDE feature-state row to add:**
 
