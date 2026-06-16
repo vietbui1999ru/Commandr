@@ -889,7 +889,7 @@ c28() { # ANNOT-1..7: annotation exclusive-create + next-seq, event append, giti
   # first write — the writer assigns seq 0000 server-side.
   local out rc f
   out=$("$ANNOT_WRITE_CMD" --bus "$bus" --task TASK-C28 --turn 3 \
-        --anchor "card:src/pay.ts" --author human --body 'Cap retries at 3.'); rc=$?
+        --anchor "card:src/pay.ts" --author human --body $'Cap retries at 3.\nKeep the note Markdown-shaped.'); rc=$?
   [ $rc -eq 0 ] || { bad "$id" "write helper exited $rc: $out"; return; }
   f="$bus/annotations/TASK-C28/0003-0000.json"
   [ -f "$f" ] || { bad "$id" "artifact not at expected path: $f"; return; }
@@ -900,7 +900,7 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 assert set(d)=={"task","turn","anchor","ts","author","body","consumed"}, set(d)
 assert d["task"]=="TASK-C28" and d["turn"]==3 and d["consumed"] is False
-assert d["anchor"]=="card:src/pay.ts" and d["body"]=="Cap retries at 3."
+assert d["anchor"]=="card:src/pay.ts" and d["body"]=="Cap retries at 3.\nKeep the note Markdown-shaped."
 PY
 
   # ANNOT-7 + EVENT-2/3: exactly one task_annotation event; author+seq present, body
