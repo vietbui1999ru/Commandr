@@ -32,6 +32,18 @@ Every new tool re-implements queueing, review, and state instead of plugging int
 
 Shape: **thin waist.** L1/L2/L5 talk to each other only through L3's filesystem contract. Harnesses stay swappable because the contract is plain files, not any tool's API.
 
+### 2026-06-18 Addendum: new sources, same boundary
+
+Recent synthesis from Agent-Native, Builder Skills, and omp sharpens the roadmap without changing the 11 locked decisions:
+
+| Source | Adopt | Do not adopt |
+|---|---|---|
+| Agent-Native | Shared action vocabulary for UI/agent operations | Its shared SQL runtime as source of truth |
+| Builder Skills | Portable `SKILL.md` workflow packages for agents | Skill internals as bus lifecycle state |
+| omp + LSP | L2 worker quality: hashline edits, language-server diagnostics/symbols, DAP, eval kernels, custom tools | omp/LSP session state as the bus |
+
+Commandr remains L3: claim, progress, approvals, events, annotations, council verdicts, derived index. Runner-local state, UI state, and skill internals stay outside `.agents/`. Implementation plan: `docs/plans/PLAN-control-plane-runner-packages.md`.
+
 ## 3. The 11 Locked Decisions
 
 1. **Driver:** model-freedom + cost matter → **decouple, don't migrate**. Keep the harness swappable; commit to no single vendor loop.
