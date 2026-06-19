@@ -1,7 +1,7 @@
 # Plan: Control-Plane Runner and Skill Packages
 
-**Status:** Future refactor / implementation backlog.
-**Date:** 2026-06-18.
+**Status:** Level 1 complete. Level 2 schema designed. Implementation blocked on RPC mode adoption.
+**Date:** 2026-06-19.
 **Purpose:** Record the Agent-Native + Builder Skills + omp synthesis for future Commandr agents without reopening the locked L3 bus decisions.
 
 ---
@@ -36,7 +36,7 @@ Anything added here must pass the same rule as existing SPEC language: if multip
 |---|---|---|
 | Agent-Native | L5 action/state philosophy | Define bus-safe action names that UI and agents can both invoke, but keep `.agents/` authoritative. |
 | Builder Skills | L1/L4 workflow packaging | Package reusable workflows as `SKILL.md` directories; skills call Commandr tools instead of becoming bus state. |
-| omp | L2 execution substrate | Add an omp runner wrapper first; later expose Commandr actions as omp custom tools. |
+| omp | L2 execution substrate | Add an omp runner wrapper first; later expose Commandr actions as omp RPC host tools (language-agnostic: Python, Rust, Go, bash). |
 | LSP | L2 code intelligence | Treat language servers as runner capabilities for diagnostics/symbols/references; never as bus state. |
 
 DiffViewer mirrors this plan in `docs/V0.7-CONTROL-PLANE-COCKPIT-PLAN.md`. Treat that document as the L5 cockpit plan and this document as the L3 boundary plan.
@@ -89,34 +89,54 @@ Definition of done for any skill: it must call public Commandr commands or read 
 
 Start with a wrapper, not a deep omp extension.
 
-Integration ladder:
+Integration ladder (updated post-research):
 
-| Level | Shape | Gate |
+| Level | Shape | Status |
 |---|---|---|
-| 0 | Manual subprocess: `omp -p "<task packet>"` | Captures stdout/stderr; no bus writes except human-managed completion. |
-| 1 | `commandr-omp-runner` wrapper | Claims packet, creates worktree/session, runs omp, streams logs, emits progress, completes/fails. |
-| 2 | omp custom tools | `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`. |
-| 3 | omp extension | Intercepts omp events/tool calls and writes bus-safe projections directly. |
+| 0 | Manual subprocess: `omp -p "<task packet>"` | Smoke test only |
+| 1 | `commandr-omp-runner` wrapper | **Complete** — claims task, workspace, streams NDJSON, emits progress, completes/fails |
+| 2 | RPC host tools | **Schema designed** — `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete` via `omp --mode rpc` |
+| 3 | omp extension/hooks | Future — intercept events directly |
 
-Recommended first implementation is Level 1.
+**Level 1 is complete.** See `llm-wiki/commandr-omp-runner/` for implementation.
 
-Level 1 acceptance criteria:
+Level 1 acceptance criteria (met):
 
-- It can claim exactly one task or accept a pre-claimed packet path.
-- It sets `AGENTS_TASK_ID` for child processes.
-- It appends neutral `task_progress` milestones only; no tool-call transcripts in `events.jsonl`.
-- It maps normal success to `task_complete` and abnormal runner failure to `task_failed`.
-- It leaves omp private state outside `.agents/`.
-- It has a deterministic test seam for the `omp` command.
+- ✅ Claims exactly one task or accepts pre-claimed packet path
+- ✅ Sets `AGENTS_TASK_ID` for child processes
+- ✅ Appends neutral `task_progress` milestones only; no tool-call transcripts in `events.jsonl`
+- ✅ Maps normal success to `task_complete` and abnormal runner failure to `task_failed`
+- ✅ Leaves omp private state outside `.agents/`
+- ✅ Has deterministic test seam for `omp` command
 
-Level 2 candidate tool schemas:
+Level 2: RPC host tools (schema in `llm-wiki/commandr-omp-runner/HOST-TOOLS.md`)
+
+Why RPC host tools instead of TypeScript plugins:
+- Language-agnostic: host can be Python, Rust, Go, bash — any JSON-lines process
+- Bidirectional: agent calls host tools; host steers agent (`steer`, `abort`, `set_model`)
+- Real-time: events stream as they happen
+- No TypeScript lock-in
+
+Host tool schema:
 
 ```json
-{"name":"commandr_progress","input":{"task":"TASK-001","note":"one-line neutral status"}}
-{"name":"commandr_request_approval","input":{"task":"TASK-001","action":"commit","reason":"why human gate is needed"}}
-{"name":"commandr_emit_artifact","input":{"task":"TASK-001","type":"review-package","path":".diffviewer/artifacts/TASK-001.json","summary":"one-line summary"}}
-{"name":"commandr_complete","input":{"task":"TASK-001","result":"pass"}}
+{"toolName":"commandr_progress","arguments":{"task":"TASK-001","milestone":"LSP diagnostics clean","metadata":{"files_changed":["src/auth.ts"]}}}
+{"toolName":"commandr_request_approval","arguments":{"task":"TASK-001","action":"rm -rf node_modules","tool":"bash","command":"rm -rf node_modules && npm install","risk":"high"}}
+{"toolName":"commandr_emit_artifact","arguments":{"task":"TASK-001","artifact_type":"diff","path":"artifacts/auth-refactor.patch","summary":"+142/-89 lines"}}
+{"toolName":"commandr_complete","arguments":{"task":"TASK-001","result":"success","summary":"Refactor complete","next_steps":"Deploy to staging"}}
 ```
+
+Policy table (runner-enforced, agent-aware):
+
+| Pattern | Risk | Action |
+|---|---|---|
+| `bash` with `rm -rf`, `sudo` | High | Request approval |
+| `bash` with `docker run/exec/rm`, `git push` | Medium | Request approval |
+| `write` to `.env`, `~/.ssh/` | High | Request approval |
+| `read`, `edit` | Low | Allow |
+
+Level 1 behavior: log policy violations to `events.jsonl` as `approval_requested` with `status: logged_only`. Continue execution.
+Level 2 behavior: pause turn via `abort`, create `.agents/approvals/<task>.pending`, wait for `.approved` or `.denied`.
 
 Do not add `commandr_emit_artifact` to SPEC until DiffViewer/Tauri has an actual artifact store consumer and a conformance case.
 
@@ -173,12 +193,18 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
 
 ## Suggested Implementation Order
 
-1. Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo first, because L5 owns the action registry UI.
-2. Add non-normative Commandr mapping table from cockpit actions to existing commands/events.
-3. Implement `commandr-omp-runner` Level 1 with a fake `OMP_CMD` test seam.
+1. ~~Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo~~ — DiffViewer V0.7 plan already has action registry.
+2. ~~Add non-normative Commandr mapping table~~ — Done in this doc and `HOST-TOOLS.md`.
+3. ~~Implement `commandr-omp-runner` Level 1~~ — **Complete** in `llm-wiki/commandr-omp-runner/`.
 4. Add lazy LSP capability detection to runner metadata or review artifacts, without adding raw LSP state to SPEC.
-5. Add adapter/conformance coverage for runner lifecycle if it becomes a supported Commandr command.
-6. Only then design omp custom tools and any new SPEC event types.
+5. **Next:** Implement `commandr-omp-runner` Level 2 — RPC mode with host tools.
+   - Requires `omp --mode rpc` adoption
+   - Register host tools on startup
+   - Handle `host_tool_call` frames
+   - Implement policy table (YAML config)
+   - Test with actual task packets
+6. Add adapter/conformance coverage for runner lifecycle if it becomes a supported Commandr command.
+7. Only then design omp extensions/hooks and any new SPEC event types.
 
 ---
 
