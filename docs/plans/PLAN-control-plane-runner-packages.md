@@ -99,20 +99,20 @@ Integration ladder (updated post-research + post-verification):
 | Level | Shape | Status |
 |---|---|---|
 | 0 | Manual subprocess: `omp -p "<task packet>"` | Smoke test only |
-| 1 | `commandr-omp-runner` wrapper | **Scaffold (smoke only)** — launches omp in `--mode json`, tees NDJSON to a side file + stderr. NOT bus-integrated (no claim, no `events.jsonl` writes, no `task_progress`/`task_complete`/`task_failed`, no approvals, no tests). |
+| 1 | `commandr-omp-runner` wrapper | **Complete (2026-06-20)** — pre-claimed packet contract (`--claimed <path>`), exports `AGENTS_TASK_ID`, calls `PROGRESS_CMD` for neutral milestones, calls `COMPLETE_CMD pass/fail` on exit, policy scan (neutral progress + workspace artifact, no blocking gate), `OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` seams, 13-case smoke test (all pass). Lives at `llm-wiki/commandr-omp-runner/`; relocate to `adapters/omp/` in Commandr before Level 2. |
 | 2 | RPC host tools | **Schema designed (non-normative)** — `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`, `commandr_fail` via `omp --mode rpc`. Blocked on RPC mode adoption. |
 | 3 | omp extension/hooks | Future — intercept events directly |
 
-**Level 1 is scaffold, not complete.** `llm-wiki/commandr-omp-runner/runner.sh` (101 lines) wraps the omp subprocess and writes raw NDJSON to a runner-local `--progress` file + stderr; it does not integrate with the bus. See "Claim-vs-reality" below.
+**Level 1 complete (2026-06-20).** `llm-wiki/commandr-omp-runner/runner.sh` rewritten; all acceptance criteria met.
 
-Level 1 acceptance criteria (NOT met — re-listed as TODOs; verified against `runner.sh` 2026-06-19):
+Level 1 acceptance criteria (all met):
 
-- ☐ Claims exactly one task or accepts pre-claimed packet path — **runner accepts a pre-claimed `--task` path only; no `bin/claim` call, no `inbox/→claimed/` move.**
-- ☐ Sets `AGENTS_TASK_ID` for child processes — **not set anywhere in `runner.sh`.**
-- ☐ Appends neutral `task_progress` milestones to `events.jsonl`; no tool-call transcripts — **writes nothing to `events.jsonl`; emits raw omp NDJSON (tool calls + results) as `output` events to a separate `--progress` file + stderr.**
-- ☐ Maps normal success to `task_complete` and abnormal failure to `task_failed` — **maps exit 0→runner-local `complete`, non-zero→`fail`; not SPEC event names; no `done/` move; no `events.jsonl` append.**
-- ☐ Leaves omp private state outside `.agents/` — **met by accident (runner touches no `.agents/` dir at all).**
-- ☐ Has deterministic test seam for `omp` command — **`$OMP_BIN` is undocumented, has no default in `runner.sh`, aborts under `set -u` if unset; no tests exist.**
+- ☑ Claims exactly one task or accepts pre-claimed packet path — **`--claimed <abs-path>` contract; extracts id from YAML frontmatter; documented in runner.sh header.**
+- ☑ Sets `AGENTS_TASK_ID` for child processes — **`export AGENTS_TASK_ID="$TASK_ID"` before omp launch.**
+- ☑ Appends neutral `task_progress` milestones via `PROGRESS_CMD`; no tool-call transcripts on the bus — **3 milestones: started, policy hit (if any), complete/failed.**
+- ☑ Maps normal success to `task_complete` and abnormal failure to `task_failed` — **via `$COMPLETE_CMD <path> pass/fail`.**
+- ☑ Leaves omp private state outside `.agents/` — **workspace is runner-local; bus writes go through PROGRESS_CMD/COMPLETE_CMD only.**
+- ☑ Has deterministic test seam for `omp` command — **`OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` env vars, all default to path-lookup; 13-case smoke test at `test/smoke.sh`, all pass.**
 
 Level 2: RPC host tools (schema in `llm-wiki/commandr-omp-runner/HOST-TOOLS.md` — a design doc, not implemented code).
 
