@@ -4,7 +4,7 @@
 
 **Scope:** Diff-only MVP. Prose/conversational capture (which requires per-turn bus artifacts for agent text) is the immediate next slice and is explicitly out of scope here.
 
-**Status:** Pre-implementation. All locked decisions recorded below. Do not re-open them.
+**Status:** Implemented (2026-06-18) — diff-only MVP complete end-to-end. All six steps landed: Step 1 SPEC v0.3 merge (PR #8); Step 2 `bin/annotate-write` + C28 (merged) and DiffViewer `POST /annotate` + `src/annotate.js` (this session); Step 3 CC `UserPromptSubmit` hook + `adapters/lib/annotate.sh` pickup (this session); Step 4 per-card annotation UI (this session); Step 5 `sidecarWatcher` open-once-then-notify (this session); Step 6 DiffViewer tests (ANN-01..05, SW-OPEN-01..03, ANN-UI-01..03 → 145 tests pass) + GUIDE feature-state row. Verification: Commandr conformance 28/0/0; DiffViewer vitest 145/0. Open gaps (not blocking): OpenCode pickup is manual fallback (`chat.message` plugin post-MVP); prose capture is the next slice. CC hook is wired portably in project `.claude/settings.json` with `$CLAUDE_PROJECT_DIR`. All locked decisions recorded below. Do not re-open them.
 
 ---
 
@@ -211,7 +211,7 @@ Task identity resolution in `annotate.sh` mirrors `checkpoint.sh`: check `$AGENT
 
 **OpenCode manual-echo fallback documentation (add to `GUIDE.md` §5 DiffViewer section):**
 
-> **OpenCode annotation pickup (MVP fallback):** OpenCode has no `UserPromptSubmit` hook. To inject pending annotations manually before a turn, run `bin/echo-annotations <task>` (or use the `/claim-task` skill which surfaces pending notes). Automatic injection via a `chat.message` plugin is the post-MVP path.
+> **OpenCode annotation pickup (MVP fallback):** OpenCode has no `UserPromptSubmit` hook. To inject pending annotations manually before a turn, read pending JSON under `.agents/annotations/<task>/` or use the `/claim-task` skill to surface pending notes. Automatic injection via a `chat.message` plugin is the post-MVP path.
 
 **Acceptance criteria:**
 - `adapters/claude-code/user-prompt-submit-hook.sh` exists, passes `bash -n` syntax check.

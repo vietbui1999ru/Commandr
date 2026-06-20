@@ -1,8 +1,10 @@
 # Plan: Control-Plane Runner and Skill Packages
 
-**Status:** Future refactor / implementation backlog.
-**Date:** 2026-06-18.
+**Status:** Level 1 = scaffold/smoke only (omp subprocess wrapper; not bus-integrated). Level 2 = schema designed, unimplemented, blocked on `omp --mode rpc` adoption. **Non-normative:** `approval_requested`, `artifact_created`, `.agents/approvals/<task>.pending`, `.denied`, and `workspaces/` are NOT in SPEC v0.3 and MUST NOT be emitted/written until added via a conformance-backed SPEC change. See "Claim-vs-reality" below.
+**Date:** 2026-06-19 (must-fix revision: corrected false "Level 1 complete" claim, dropped the blocking turn-time approval gate, fenced SPEC-forbidden events).
 **Purpose:** Record the Agent-Native + Builder Skills + omp synthesis for future Commandr agents without reopening the locked L3 bus decisions.
+
+See also: `docs/BUILDERIO-FIT.md` for the concrete fit verdict and action/artifact boundary.
 
 ---
 
@@ -36,10 +38,12 @@ Anything added here must pass the same rule as existing SPEC language: if multip
 |---|---|---|
 | Agent-Native | L5 action/state philosophy | Define bus-safe action names that UI and agents can both invoke, but keep `.agents/` authoritative. |
 | Builder Skills | L1/L4 workflow packaging | Package reusable workflows as `SKILL.md` directories; skills call Commandr tools instead of becoming bus state. |
-| omp | L2 execution substrate | Add an omp runner wrapper first; later expose Commandr actions as omp custom tools. |
+| omp | L2 execution substrate | Add an omp runner wrapper first; later expose Commandr actions as omp RPC host tools (language-agnostic: Python, Rust, Go, bash). |
 | LSP | L2 code intelligence | Treat language servers as runner capabilities for diagnostics/symbols/references; never as bus state. |
 
 DiffViewer mirrors this plan in `docs/V0.7-CONTROL-PLANE-COCKPIT-PLAN.md`. Treat that document as the L5 cockpit plan and this document as the L3 boundary plan.
+
+Fit verdict: adopt Builder.io's action/artifact discipline, not its runtime authority model. Commandr stays a filesystem bus; DiffViewer/Tauri may use SQLite and rich UI state as derived projection only.
 
 ---
 
@@ -54,8 +58,9 @@ Initial vocabulary:
 | `task.claim` | Move packet from `inbox/` to `claimed/`; append `task_claimed`. |
 | `task.progress` | Append `task_progress`. |
 | `task.complete` | Move packet to `done/`; append `task_complete`. |
-| `task.fail` | Preserve failure artifact if needed; append `task_failed`. |
-| `approval.request` | Create/display a pending approval artifact outside committed bus state. |
+| `task.complete_fail` | `bin/complete <claimed-path> fail` for normal completion with unmet acceptance criteria. |
+| `task.failed` | Supervisor emits `task_failed` for abnormal termination. |
+| `approval.request` | Create/display a local approval proposal artifact outside committed bus state. |
 | `approval.approve` | Write `.agents/approvals/<task>.approved`. |
 | `approval.deny` | Do not write token; append neutral progress only if useful. |
 | `annotation.create` | Write `.agents/annotations/<task>/<turn>-<seq>.json`; append `task_annotation`. |
@@ -78,7 +83,7 @@ Candidate skills:
 | `evidence-package` | DiffViewer/Tauri artifact export + `task_progress` summary |
 | `review-package` | `council --diff` + DiffViewer snapshots + residual-risk summary |
 | `runner-adapter` | Claim task, launch runner, stream logs, complete/fail |
-| `approval-policy` | Explain approval state and pending gate outcome |
+| `approval-policy` | Explain approval token state and commit-gate outcome |
 | `bus-debugger` | Validate layout, events, stale claimed packets, missing tokens |
 
 Definition of done for any skill: it must call public Commandr commands or read SPEC-defined files only. It must not parse private adapter state.
@@ -89,36 +94,59 @@ Definition of done for any skill: it must call public Commandr commands or read 
 
 Start with a wrapper, not a deep omp extension.
 
-Integration ladder:
+Integration ladder (updated post-research + post-verification):
 
-| Level | Shape | Gate |
+| Level | Shape | Status |
 |---|---|---|
-| 0 | Manual subprocess: `omp -p "<task packet>"` | Captures stdout/stderr; no bus writes except human-managed completion. |
-| 1 | `commandr-omp-runner` wrapper | Claims packet, creates worktree/session, runs omp, streams logs, emits progress, completes/fails. |
-| 2 | omp custom tools | `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`. |
-| 3 | omp extension | Intercepts omp events/tool calls and writes bus-safe projections directly. |
+| 0 | Manual subprocess: `omp -p "<task packet>"` | Smoke test only |
+| 1 | `commandr-omp-runner` wrapper | **Scaffold (smoke only)** — launches omp in `--mode json`, tees NDJSON to a side file + stderr. NOT bus-integrated (no claim, no `events.jsonl` writes, no `task_progress`/`task_complete`/`task_failed`, no approvals, no tests). |
+| 2 | RPC host tools | **Schema designed (non-normative)** — `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`, `commandr_fail` via `omp --mode rpc`. Blocked on RPC mode adoption. |
+| 3 | omp extension/hooks | Future — intercept events directly |
 
-Recommended first implementation is Level 1.
+**Level 1 is scaffold, not complete.** `llm-wiki/commandr-omp-runner/runner.sh` (101 lines) wraps the omp subprocess and writes raw NDJSON to a runner-local `--progress` file + stderr; it does not integrate with the bus. See "Claim-vs-reality" below.
 
-Level 1 acceptance criteria:
+Level 1 acceptance criteria (NOT met — re-listed as TODOs; verified against `runner.sh` 2026-06-19):
 
-- It can claim exactly one task or accept a pre-claimed packet path.
-- It sets `AGENTS_TASK_ID` for child processes.
-- It appends neutral `task_progress` milestones only; no tool-call transcripts in `events.jsonl`.
-- It maps normal success to `task_complete` and abnormal runner failure to `task_failed`.
-- It leaves omp private state outside `.agents/`.
-- It has a deterministic test seam for the `omp` command.
+- ☐ Claims exactly one task or accepts pre-claimed packet path — **runner accepts a pre-claimed `--task` path only; no `bin/claim` call, no `inbox/→claimed/` move.**
+- ☐ Sets `AGENTS_TASK_ID` for child processes — **not set anywhere in `runner.sh`.**
+- ☐ Appends neutral `task_progress` milestones to `events.jsonl`; no tool-call transcripts — **writes nothing to `events.jsonl`; emits raw omp NDJSON (tool calls + results) as `output` events to a separate `--progress` file + stderr.**
+- ☐ Maps normal success to `task_complete` and abnormal failure to `task_failed` — **maps exit 0→runner-local `complete`, non-zero→`fail`; not SPEC event names; no `done/` move; no `events.jsonl` append.**
+- ☐ Leaves omp private state outside `.agents/` — **met by accident (runner touches no `.agents/` dir at all).**
+- ☐ Has deterministic test seam for `omp` command — **`$OMP_BIN` is undocumented, has no default in `runner.sh`, aborts under `set -u` if unset; no tests exist.**
 
-Level 2 candidate tool schemas:
+Level 2: RPC host tools (schema in `llm-wiki/commandr-omp-runner/HOST-TOOLS.md` — a design doc, not implemented code).
+
+Why RPC host tools instead of TypeScript plugins:
+- Language-agnostic: host can be Python, Rust, Go, bash — any JSON-lines process
+- Bidirectional: agent calls host tools; host steers agent (`steer`, `abort`, `set_model`)
+- Real-time: events stream as they happen
+- No TypeScript lock-in
+
+Host tool call schema (5 tools; the runner invokes these, they are runner-local calls — the bus side-effect shape is defined in HOST-TOOLS.md and MUST be reconciled to SPEC §6 `ts`/`event` keys before any emission):
 
 ```json
-{"name":"commandr_progress","input":{"task":"TASK-001","note":"one-line neutral status"}}
-{"name":"commandr_request_approval","input":{"task":"TASK-001","action":"commit","reason":"why human gate is needed"}}
-{"name":"commandr_emit_artifact","input":{"task":"TASK-001","type":"review-package","path":".diffviewer/artifacts/TASK-001.json","summary":"one-line summary"}}
-{"name":"commandr_complete","input":{"task":"TASK-001","result":"pass"}}
+{"toolName":"commandr_progress","arguments":{"task":"TASK-001","milestone":"LSP diagnostics clean","metadata":{"files_changed":["src/auth.ts"]}}}
+{"toolName":"commandr_request_approval","arguments":{"task":"TASK-001","action":"destructive bash blocked (high risk)","risk":"high","reason":"rm -rf in workspace root","artifact_ref":"workspaces/TASK-001/artifacts/policy-0001.json"}}
+{"toolName":"commandr_emit_artifact","arguments":{"task":"TASK-001","artifact_type":"diff","path":"artifacts/auth-refactor.patch","summary":"+142/-89 lines"}}
+{"toolName":"commandr_complete","arguments":{"task":"TASK-001","result":"success","summary":"Refactor complete","next_steps":"Deploy to staging"}}
+{"toolName":"commandr_fail","arguments":{"task":"TASK-001","reason":"Type mismatch in JWT payload","recoverable":true,"suggested_retry":"Fix src/jwt.ts:42"}}
 ```
 
-Do not add `commandr_emit_artifact` to SPEC until DiffViewer/Tauri has an actual artifact store consumer and a conformance case.
+Policy table (runner-local, agent-aware; the bus never sees the raw command, only a neutral risk note + artifact reference):
+
+| Pattern | Risk | Action |
+|---|---|---|
+| `bash` with `rm -rf`, `sudo` | High | Emit neutral progress + artifact ref |
+| `bash` with `docker run/exec/rm`, `git push` | Medium | Emit neutral progress + artifact ref |
+| `write` to `.env`, `~/.ssh/` | High | Emit neutral progress + artifact ref |
+| `read`, `edit` | Low | Allow |
+
+**Approval gate decision (must-fix): the blocking turn-time gate is DROPPED.** The enforceable human gate stays the commit-time `pre-commit-gate` (SPEC §7, `.agents/approvals/<task>.approved`, live C11). Council stays advisory (SPEC §12, "MUST NOT block the approval gate"). This plan does NOT introduce a third parallel gate — that was a Non-Goal in `PLAN-next-steps.md` and a brush against locked decision 9. Revised behavior:
+
+- **Level 1 behavior:** runner detects a policy hit → emits a NEUTRAL `task_progress` milestone (e.g. `"policy: destructive bash blocked (high risk)"`) and writes the full action details to a runner-local workspace artifact, referenced by the progress line. Does NOT emit `approval_requested`. Does NOT block. The human reviews in DiffViewer; the commit gate enforces.
+- **Level 2 behavior (RPC):** same neutral-progress + artifact-ref projection, plus real-time streaming + bidirectional steer. RPC mode does NOT add a second blocking gate. `.agents/approvals/<task>.pending` and `.denied` are NOT introduced — approval remains `.approved`-only (SPEC §7 APPROVAL-1: denial writes nothing).
+
+**Do not add `commandr_emit_artifact` OR `approval_requested` OR `artifact_created` to SPEC until DiffViewer/Tauri has a concrete consumer and a conformance case.** This hold is now symmetric across all three event types (previously only `commandr_emit_artifact` was held; `approval_requested`/`artifact_created` were inconsistent). `workspaces/` is a runner convention, not a bus contract — no SPEC change needed or wanted for it.
 
 ---
 
@@ -173,14 +201,30 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
 
 ## Suggested Implementation Order
 
-1. Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo first, because L5 owns the action registry UI.
-2. Add non-normative Commandr mapping table from cockpit actions to existing commands/events.
-3. Implement `commandr-omp-runner` Level 1 with a fake `OMP_CMD` test seam.
+1. ~~Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo~~ — DiffViewer V0.7 plan already has action registry.
+2. ~~Add non-normative Commandr mapping table~~ — Done in this doc and `HOST-TOOLS.md`.
+3. **Implement `commandr-omp-runner` Level 1 for real** — the current `runner.sh` is scaffold. To meet the criteria: call `bin/claim` (or accept pre-claimed path + document), export `AGENTS_TASK_ID`, shell to `bin/progress` for neutral `task_progress` (no raw NDJSON transcripts on the bus), shell to `bin/complete` for `task_complete`/`task_failed` + `done/` move (do NOT raw-`mv` bus files), default `$OMP_BIN=omp` and gate it under `set -u`, add at least one smoke test.
 4. Add lazy LSP capability detection to runner metadata or review artifacts, without adding raw LSP state to SPEC.
-5. Add adapter/conformance coverage for runner lifecycle if it becomes a supported Commandr command.
-6. Only then design omp custom tools and any new SPEC event types.
+5. **Next (after Level 1 is genuinely met):** Level 2 — RPC mode with host tools.
+   - Requires `omp --mode rpc` adoption (verify it ships before depending on it; consider a JSON-mode sidecar fallback that parses omp tool-call frames so Level 2 is not single-point-blocked on RPC).
+   - Register host tools on startup.
+   - Handle `host_tool_call` frames.
+   - Implement the runner-local policy table; project hits as neutral progress + artifact refs (NOT `approval_requested` events, NOT a blocking gate).
+   - Test with actual task packets.
+6. Add adapter/conformance coverage for runner lifecycle if it becomes a supported Commandr command.
+7. Only then design omp extensions/hooks and any new SPEC event types (`approval_requested`/`artifact_created` need SPEC §6 + §11 divergence + conformance cases BEFORE any emission).
 
 ---
+
+## Should-Fix TODOs (documented, not blocking)
+
+These are smells found during the 2026-06-19 review, tracked here so they are not lost:
+
+- **`runner-policy.yml` placement:** `HOST-TOOLS.md` shows it under `.agents/` — that violates ADAPTER-2 (harness-private state MUST NOT live under `.agents/`). Move it to the workspace or `~/.config/commandr-runner/`.
+- **Host tools must shell to `bin/complete`, not raw-`mv` bus files:** `HOST-TOOLS.md` shows the runner doing `mv .agents/claimed/* .agents/done/` directly, bypassing COMPLETE-1 and the event invariant. The runner must call `bin/complete` so the `task_complete`/`task_failed` event + atomic move + stdout contract hold.
+- **Runner placement:** `llm-wiki/commandr-omp-runner/` is an L2 component living in the L4 knowledge repo, re-creating the double-duty the blueprint said to shed. Acceptable as scratch for the smoke test; once Level 1 is genuinely met, relocate to a dedicated repo, `dotfiles` (L1 adapter home), or `adapters/omp/` inside Commandr.
+- **`HOST-TOOLS.md` event schema:** examples use `"timestamp"`/`"type"` keys; SPEC §6 EVENT-2 mandates `"ts"`/`"event"`. Any implementation following HOST-TOOLS literally would fail C08. Reconcile before any emission.
+- **Non-RPC Level-2 fallback:** Level 2 is single-point-blocked on `omp --mode rpc` shipping. A JSON-mode sidecar fallback de-risks the schedule.
 
 ## Non-Goals
 
