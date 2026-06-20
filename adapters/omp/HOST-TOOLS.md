@@ -12,7 +12,7 @@
 Keep the contract small and concrete. Every host tool maps to exactly one filesystem operation.
 
 | Principle | Rationale |
-|---|---|
+| --- | --- |
 | One tool, one side effect | Easy to audit, easy to replay |
 | Events are append-only | `events.jsonl` is source of truth for timeline |
 | Artifacts live in workspace | Runner manages workspace; bus references them |
@@ -75,8 +75,9 @@ Agent declares an artifact. Runner writes to workspace + logs to events.
 ```
 
 **Artifact types:**
+
 | Type | Example | Created by |
-|---|---|---|
+| --- | --- | --- |
 | `diff` | `git diff` output | bash tool |
 | `file` | New or modified source file | write/edit tool |
 | `log` | Test output, build log | bash tool |
@@ -242,7 +243,7 @@ policy:
 **Policy enforcement behavior (revised 2026-06-19 — no blocking gate; the commit-time `pre-commit-gate` is the single enforceable human gate):**
 
 | Level | Behavior |
-|---|---|
+| --- | --- |
 | Level 1 (`--mode json`) | Emit a NEUTRAL `task_progress` milestone (e.g. `"policy: destructive bash blocked (high risk)"`) + write the full action to a workspace artifact + reference it from the progress line. Continue execution. Human reviews in DiffViewer; commit gate enforces. |
 | Level 2 (`--mode rpc`) | Same neutral-progress + artifact-ref projection, plus real-time streaming + bidirectional steer via RPC. Does NOT create `.pending`/`.denied`; does NOT block mid-turn. The commit gate remains the only enforceable block. |
 
@@ -253,7 +254,7 @@ policy:
 Any L2 runner implementing this schema must expose (updated 2026-06-20 after Level 1 relocation to `adapters/omp/`):
 
 | Capability | Level 1 (current `runner.sh`) | Level 2 (future RPC) |
-|---|---|---|
+| --- | --- | --- |
 | Parse task packet | ✅ (accepts `--claimed <path>` or offline `--task` path / stdin) | ✅ |
 | Claim task (`bin/claim`) | ❌ NOT implemented; caller pre-claims and passes `--claimed` | ❌ (still the orchestrator's job unless this contract changes) |
 | Set `AGENTS_TASK_ID` | ✅ in `--claimed` mode | ✅ |
