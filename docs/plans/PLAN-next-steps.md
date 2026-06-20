@@ -22,10 +22,10 @@
 | 1.2 | 6 bus tools (`claim`/`complete`/`pre-commit-gate`/`progress`/`council`/`annotate-write`) still NOT on global PATH — conformance only passes via `*_CMD` env overrides | **DONE (2026-06-18):** symlinked all 7 (incl. `index`) into `~/.local/bin`. Bare `bash protocol/conformance.sh` passes 28/0/0. One collision: `complete` is a bash builtin → `conformance.sh` runs `enable -n complete` so the bus tool shadows it for the test process (documented in GUIDE §6). | A bare `bash protocol/conformance.sh` should pass. |
 | 1.3 | DiffViewer uncommitted `src/steer.js` + `test/steer.test.js` + `README.md` (pre-existing, not from annotation work) | **DONE (2026-06-19):** reviewed and committed as `db3f7d2 feat(steer): support direct OpenCode sessions safely`. Added raw OpenCode session IDs, synthetic-card clipboard fallback, and deterministic `sidecarWatcher` waits. Full DiffViewer suite passes 136/136. | Clean working tree before stacking more work. |
 | 1.4 | DiffViewer open PRs: #3 (`feat/architecture-view-path-a`), #2 (`feat/mobile-realdevice-hardening`) | **DONE (2026-06-18):** split/merged stale PRs; no open DiffViewer PRs remained before the 2026-06-19 steer cleanup commit. | Pipeline hygiene. |
-| 1.5 | `DiffViewer/nvim/diffviewer.lua` untracked | Decision: keep + document as the v0 Neovim bridge, or move to dotfiles. See §3. | It is the first operator-lane artifact. |
+| 1.5 | `DiffViewer/nvim/diffviewer.lua` untracked | **DONE (2026-06-19):** kept in DiffViewer as v0 operator bridge and committed as `c4010c9 feat(nvim): add safe DiffViewer bridge`. README documents it as a local projection only. Destructive decline now requires explicit confirmation. Annotation-write remains future work. | It is the first operator-lane artifact. |
 | 1.6 | Stale `.claude/worktrees/` | Audit + clean (manual; do not auto-remove). | Housekeeping. |
 
-**Gate:** after 1.1–1.4, both repos have passing verification and only known local runtime/operator artifacts remain (`.agents/`, `.claude/session-state.md`, worktrees/cache, and `DiffViewer/nvim/`).
+**Gate:** after 1.1–1.5, both repos have passing verification and only known local runtime artifacts remain (`.agents/`, `.claude/session-state.md`, worktrees/cache).
 
 ---
 
@@ -65,7 +65,7 @@ Gaps vs the wiki synthesis:
 - Deep-link scheme open (`nvim://file:line` vs terminal command) — [[syntheses/neovim-ai-operator-workflow]] lists this as an open question.
 - Hardcoded `localhost:3333`; no auth (acceptable for loopback MVP; matches DiffViewer's loopback model).
 
-**Action (1.5 follow-up):** keep `nvim/diffviewer.lua` in the DiffViewer repo as the v0 bridge; document it in DiffViewer README; add the annotation-write path as the next bridge slice.
+**Action status:** v0 bridge is kept in DiffViewer and documented. Add the annotation-write path as the next bridge slice once the current branch has the DiffViewer `/annotate` endpoint available.
 
 ### 3.2 Artifact reference types (resolve wiki open questions)
 
