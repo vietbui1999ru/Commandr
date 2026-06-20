@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-09 (Phase 2 complete — sidecar ingestion live in DiffViewer).
+Last updated: 2026-06-19 (Builder.io fit documented; SPEC v0.3 current).
 
 ## 1. What you are starting
 
@@ -20,11 +20,13 @@ OpenCode) plug in through adapters; DiffViewer renders diffs as the L5 UI.
 
 | Piece | Where | Role |
 |---|---|---|
-| Bus contract | `protocol/SPEC.md` (v0.1) | authoritative data shapes + invariants |
-| Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate` | operate the bus from any repo |
-| Conformance | `protocol/conformance.sh` | definition of done (C01–C14) |
+| Bus contract | `protocol/SPEC.md` (v0.3) | authoritative data shapes + invariants |
+| Bus tools | `bin/claim`, `bin/complete`, `bin/progress`, `bin/pre-commit-gate`, `bin/council`, `bin/index`, `bin/annotate-write` | operate the bus from any repo |
+| Conformance | `protocol/conformance.sh` | definition of done (C01–C28) |
 | Harness adapters | `adapters/claude-code/`, `adapters/opencode/` (+ shared `adapters/lib/`) | project turn checkpoints / session end onto the bus |
 | Diff UI | `~/repos/DiffViewer` | watches `.diffviewer/turns/` sidecars, renders per-turn diff cards |
+
+Builder.io Agent-Native and Skills are documented as design inputs, not runtime dependencies. See `docs/BUILDERIO-FIT.md`: Commandr adopts the shared action vocabulary and skill/artifact packaging ideas while keeping `.agents/` as the only authoritative lifecycle state.
 
 ## 2. Prerequisites
 
@@ -49,7 +51,7 @@ Alternative (no PATH change): every consumer accepts env overrides —
 In each repo that should carry tasks (LAYOUT-2 — directories must exist first):
 
 ```sh
-mkdir -p .agents/{inbox,claimed,done,approvals,council}
+mkdir -p .agents/{inbox,claimed,done,approvals,council,annotations}
 touch .agents/events.jsonl
 ```
 
@@ -168,31 +170,39 @@ and OpenCode sessions. Steer is clipboard-based (`POST /steer` → pbcopy).
 
 ```sh
 cd ~/repos/Commandr
-# Bus tools (explicit env form works without PATH setup):
-CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+# Bus tools on PATH:
 protocol/conformance.sh
 
-# Adapter conformance (drives C13 through the driver verbs):
-protocol/conformance.sh --adapter adapters/claude-code/conformance-driver.sh
-protocol/conformance.sh --adapter adapters/opencode/conformance-driver.sh
+# Or explicit env form without PATH setup:
+CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
+GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
+COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
+ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
+protocol/conformance.sh
+
+# Adapter conformance (driver paths must be absolute):
+protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
+protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 ```
 
-Expected: 14 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
+Expected: 28 pass, 0 fail. DiffViewer: `npx vitest run` plus
 `bash test/hooks.sh` and `bash test/install.sh`.
 
 ## 7. Current feature state — UPDATE THIS TABLE EVERY SESSION
 
 | Capability | Status | Since |
 |---|---|---|
-| Bus tools (`claim`/`complete`/`progress`/`pre-commit-gate`) | live, SPEC v0.1 | Phase 0 |
-| Conformance C01–C14 incl. `--adapter` drive | live | Phase 1 |
+| Bus tools (`claim`/`complete`/`progress`/`pre-commit-gate`) | live, SPEC v0.3 | Phase 0 |
+| Builder.io fit decision | documented; action/artifact pattern only, no runtime replacement | 2026-06-19 |
+| Conformance C01–C28 incl. `--adapter` drive | live | Phase 1 |
 | CC adapter (turn checkpoint + `session_end`) | live | Phase 1 |
 | OC adapter (turn checkpoint via idle) | live | Phase 1 |
 | OC `session_end` mapping | **deferred** — no verified per-session shutdown event | — |
 | DiffViewer sidecar ingestion (both harnesses) | live at test level; live e2e not yet exercised | Phase 2 |
 | Adapters installed user-side (§3.3/3.4) | **pending** | — |
 | GitHub remotes (Commandr unpushed; DiffViewer ahead of origin) | **pending user decision** | — |
-| `bin/council`, `bin/index`, `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
+| `bin/council` advisory gate and diff mode | live, SPEC §12 + C15-C20/C25-C27 | Phase 3 |
+| `bin/index` derived cross-repo fold | live, SPEC §13 + C21-C24 | Phase 3 |
+| `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |
 | llm-wiki sheds `claude-setup/` → dotfiles | not started (Phase 4) | — |
 | Tauri UI, multi-machine git-ref claims | not started (Phase 5) | — |

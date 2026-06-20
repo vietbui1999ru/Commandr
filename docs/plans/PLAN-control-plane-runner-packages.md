@@ -4,6 +4,8 @@
 **Date:** 2026-06-19 (must-fix revision: corrected false "Level 1 complete" claim, dropped the blocking turn-time approval gate, fenced SPEC-forbidden events).
 **Purpose:** Record the Agent-Native + Builder Skills + omp synthesis for future Commandr agents without reopening the locked L3 bus decisions.
 
+See also: `docs/BUILDERIO-FIT.md` for the concrete fit verdict and action/artifact boundary.
+
 ---
 
 ## Boundary
@@ -41,6 +43,8 @@ Anything added here must pass the same rule as existing SPEC language: if multip
 
 DiffViewer mirrors this plan in `docs/V0.7-CONTROL-PLANE-COCKPIT-PLAN.md`. Treat that document as the L5 cockpit plan and this document as the L3 boundary plan.
 
+Fit verdict: adopt Builder.io's action/artifact discipline, not its runtime authority model. Commandr stays a filesystem bus; DiffViewer/Tauri may use SQLite and rich UI state as derived projection only.
+
 ---
 
 ## Future Artifact 1: Bus Action Vocabulary
@@ -54,8 +58,9 @@ Initial vocabulary:
 | `task.claim` | Move packet from `inbox/` to `claimed/`; append `task_claimed`. |
 | `task.progress` | Append `task_progress`. |
 | `task.complete` | Move packet to `done/`; append `task_complete`. |
-| `task.fail` | Preserve failure artifact if needed; append `task_failed`. |
-| `approval.request` | Create/display a pending approval artifact outside committed bus state. |
+| `task.complete_fail` | `bin/complete <claimed-path> fail` for normal completion with unmet acceptance criteria. |
+| `task.failed` | Supervisor emits `task_failed` for abnormal termination. |
+| `approval.request` | Create/display a local approval proposal artifact outside committed bus state. |
 | `approval.approve` | Write `.agents/approvals/<task>.approved`. |
 | `approval.deny` | Do not write token; append neutral progress only if useful. |
 | `annotation.create` | Write `.agents/annotations/<task>/<turn>-<seq>.json`; append `task_annotation`. |
@@ -78,7 +83,7 @@ Candidate skills:
 | `evidence-package` | DiffViewer/Tauri artifact export + `task_progress` summary |
 | `review-package` | `council --diff` + DiffViewer snapshots + residual-risk summary |
 | `runner-adapter` | Claim task, launch runner, stream logs, complete/fail |
-| `approval-policy` | Explain approval state and pending gate outcome |
+| `approval-policy` | Explain approval token state and commit-gate outcome |
 | `bus-debugger` | Validate layout, events, stale claimed packets, missing tokens |
 
 Definition of done for any skill: it must call public Commandr commands or read SPEC-defined files only. It must not parse private adapter state.

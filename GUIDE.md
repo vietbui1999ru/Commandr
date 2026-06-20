@@ -9,7 +9,7 @@ How to start and run the Commandr toolchain as it exists **today**.
 > "Current feature state" table at the end of every working session. If this guide
 > and the code disagree, the code (and `protocol/SPEC.md`) win — then fix the guide.
 
-Last updated: 2026-06-15 (SPEC v0.3 §14 annotation loop merged — per-turn human notes injected as next-prompt context; `task_annotation` event + `.agents/annotations/` defined; the annotation write-helper `bin/annotate-write` landed and **C28 is live — suite now 28/0**. Prior: SPEC v0.2 §12.7 council diff mode — `bin/council --diff <range>|-` bus-less verdict JSON on stdout, C25–C27; §13 index fold (`bin/index` + C21–C24); §12 council gate (`bin/council` + `council_verdict` + C15–C20); Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, per issue #1).
+Last updated: 2026-06-18 (Annotation loop diff-only MVP completed end-to-end: DiffViewer `POST /annotate` + per-card annotation UI + `sidecarWatcher` open-once-then-notify + CC `UserPromptSubmit` pickup hook + `adapters/lib/annotate.sh` consumer — suite 28/0, DiffViewer 145 tests. `bin/index` symlinked onto `~/.local/bin` so C21–C24 run natively. Prior: 2026-06-15 SPEC v0.3 §14 merge + `bin/annotate-write` + C28; SPEC v0.2 §12.7 council diff mode `bin/council --diff` C25–C27; §13 `bin/index` C21–C24; §12 `bin/council` + `council_verdict` C15–C20; Mobile companion MVP-0 in DiffViewer — loopback `:3334` approval listener + PWA, Tailscale-only, per issue #1).
 
 ## 1. What you are starting
 
@@ -170,34 +170,47 @@ the server watches those directories, renders grouped diff cards over SSE, and
 consumes (unlinks) each snapshot after broadcast. Works identically for Claude Code
 and OpenCode sessions. Steer is clipboard-based (`POST /steer` → pbcopy).
 
+**Annotation pickup (Claude Code vs OpenCode).** Claude Code injects pending
+`.agents/annotations/<task>/` notes into the next prompt via a `UserPromptSubmit`
+hook (`adapters/claude-code/user-prompt-submit-hook.sh` → `adapters/lib/annotate.sh`);
+the hook is fail-open — it never gates a turn, and on any failure the prompt passes
+through unchanged. The hook is wired in the **project** `.claude/settings.json` with
+`$CLAUDE_PROJECT_DIR/adapters/claude-code/user-prompt-submit-hook.sh` — portable
+across checkout paths (Claude Code expands `$CLAUDE_PROJECT_DIR` to the project root).
+This is intentionally project-scoped: only repos with a `.agents/` bus have anything
+to inject, so the hook belongs with the repo, not the machine. By contrast the
+`Stop`/`SessionEnd` checkpoint hooks are documented as a **global** `~/.claude/settings.json`
+install (§3.3) — they apply to every project — but are not yet installed user-side
+(see feature-state table); that asymmetry is deliberate, not a bug. OpenCode has no
+`UserPromptSubmit` hook, so the MVP fallback is manual: read pending annotation
+JSON under `.agents/annotations/<task>/` or use the `/claim-task` skill to surface
+pending notes before sending a turn. Automatic injection for OpenCode via a
+`chat.message` plugin is the post-MVP path (SPEC §11 divergence 5).
+
 ## 6. Verifying the install
 
 ```sh
 cd ~/repos/Commandr
-# Bus tools (explicit env form works without PATH setup):
-CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
-COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
-ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
+# Bus tools on PATH (symlinked into ~/.local/bin): the bare form works.
+# `complete` is a bash builtin, so conformance.sh runs `enable -n complete`
+# first to let the bus tool shadow it for the test process.
 protocol/conformance.sh
 
 # Adapter conformance (drives C13 through the driver verbs).
 # Driver paths MUST be absolute — conformance.sh cd's into a throwaway
 # fixture repo, so relative paths fail with "No such file or directory":
-CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
-GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
-COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
-ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
 protocol/conformance.sh --adapter "$PWD/adapters/claude-code/conformance-driver.sh"
+protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
 
+# Without PATH setup, pass the tools explicitly via env (all seven):
 CLAIM_CMD=$PWD/bin/claim COMPLETE_CMD=$PWD/bin/complete \
 GATE_CMD=$PWD/bin/pre-commit-gate PROGRESS_CMD=$PWD/bin/progress \
 COUNCIL_CMD=$PWD/bin/council INDEX_CMD=$PWD/bin/index \
 ANNOT_WRITE_CMD=$PWD/bin/annotate-write \
-protocol/conformance.sh --adapter "$PWD/adapters/opencode/conformance-driver.sh"
+protocol/conformance.sh
 ```
 
-Expected: 28 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
+Expected: 28 pass, 0 fail. DiffViewer: `npx vitest run` (145 tests) plus
 `bash test/hooks.sh` and `bash test/install.sh`.
 
 ## 7. Current feature state — UPDATE THIS TABLE EVERY SESSION
@@ -217,7 +230,8 @@ Expected: 28 pass, 0 fail. DiffViewer: `npx vitest run` (52 tests) plus
 | Quality Gate CI (markdownlint loose, aislop, conformance ×3, Copilot review on PRs) | live — `.github/workflows/quality-gate.yml` | 2026-06-09 |
 | `bin/council` (SPEC §12 advisory gate; `COUNCIL_EVALUATOR_CMD` seam; C15–C20) | live | Phase 3 |
 | `bin/council --diff <range>\|-` (SPEC §12.7 bus-less diff mode; verdict JSON on stdout; C25–C27) | live | 2026-06-12 |
-| Annotation loop (SPEC §14): writer `bin/annotate-write` + conformance C28 | **live (bus write path; suite 28/0)** — DiffViewer `POST /annotate` + per-card UI + `UserPromptSubmit` hook still pending (plan Steps 2-HTTP–5) | 2026-06-15 |
+| Annotation loop (SPEC §14): `bin/annotate-write` + C28; DiffViewer `POST /annotate` + per-card UI + `sidecarWatcher` auto-open; CC `UserPromptSubmit` hook + `adapters/lib/annotate.sh` pickup | **live (diff-only MVP; suite 28/0, DiffViewer 145 tests)** — OpenCode pickup is manual-echo fallback (`chat.message` plugin post-MVP); prose capture is the next slice. CC hook wired in project `.claude/settings.json` via `$CLAUDE_PROJECT_DIR` (portable) | 2026-06-18 |
+| Bus tools on global PATH (`claim`/`complete`/`pre-commit-gate`/`progress`/`council`/`annotate-write`/`index` symlinked into `~/.local/bin`) | **live** — bare `bash protocol/conformance.sh` passes 28/0/0; `conformance.sh` runs `enable -n complete` to let the bus tool shadow the bash builtin. Stop/SessionEnd adapters still **not** installed user-side (see row below) | 2026-06-18 |
 | `review-council` / `delegate-pi` rewired as thin wrappers over `bin/council` (decision 6) | not started — wrappers live in dotfiles, not this repo | — |
 | `bin/index` (SPEC §13 derived cross-repo cache; `AGENTS_INDEX_REPOS`/`AGENTS_INDEX_FILE` seam; C21–C24) | live | 2026-06-12 |
 | `~/.pi/agent/AGENTS.md`, CGC→KuzuDB | not started (Phase 3) | — |

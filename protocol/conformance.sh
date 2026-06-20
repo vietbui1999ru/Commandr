@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# conformance.sh — the one conformance test for the .agents/ bus (SPEC v0.1).
+# conformance.sh — the one conformance test for the .agents/ bus (SPEC v0.3).
 # Definition of done for the bus tools and for every harness adapter.
 #
 # Modes:
@@ -9,12 +9,17 @@
 #                                     #  session-end <dir> <sid> — see c13_adapter)
 #
 # Status: C01-C28 live, including the adapter-mode C13 drive, the §12 council gate,
-# and the §13 index fold.
+# the §13 index fold, and the §14 annotation loop.
 #
 # Env overrides: CLAIM_CMD (default: claim), COMPLETE_CMD (default: complete),
 #                GATE_CMD (default: pre-commit-gate), PROGRESS_CMD (default: progress),
-#                COUNCIL_CMD (default: council), INDEX_CMD (default: index)
+#                COUNCIL_CMD (default: council), INDEX_CMD (default: index),
+#                ANNOT_WRITE_CMD (default: annotate-write)
 set -u
+
+enable -n complete 2>/dev/null || true   # `complete` is a bash builtin (programmable
+                                         # completion); disable it so COMPLETE_CMD=complete
+                                         # resolves to the bus tool on PATH (SPEC §11.2).
 
 CLAIM_CMD=${CLAIM_CMD:-claim}
 COMPLETE_CMD=${COMPLETE_CMD:-complete}
