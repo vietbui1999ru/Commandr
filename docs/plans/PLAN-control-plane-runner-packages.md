@@ -1,7 +1,7 @@
 # Plan: Control-Plane Runner and Skill Packages
 
-**Status:** Level 1 = scaffold/smoke only (omp subprocess wrapper; not bus-integrated). Level 2 = schema designed, unimplemented, blocked on `omp --mode rpc` adoption. **Non-normative:** `approval_requested`, `artifact_created`, `.agents/approvals/<task>.pending`, `.denied`, and `workspaces/` are NOT in SPEC v0.3 and MUST NOT be emitted/written until added via a conformance-backed SPEC change. See "Claim-vs-reality" below.
-**Date:** 2026-06-19 (must-fix revision: corrected false "Level 1 complete" claim, dropped the blocking turn-time approval gate, fenced SPEC-forbidden events).
+**Status:** Level 1 = bus-integrated omp subprocess wrapper live in `adapters/omp/` with 13/13 smoke passing. Level 2 = schema designed, unimplemented, blocked on `omp --mode rpc` adoption. **Non-normative:** `approval_requested`, `artifact_created`, `.agents/approvals/<task>.pending`, `.denied`, and `workspaces/` are NOT in SPEC v0.3 and MUST NOT be emitted/written until added via a conformance-backed SPEC change.
+**Date:** 2026-06-20 (Level 1 relocated into Commandr; prior 2026-06-19 revision corrected false completion claims, dropped the blocking turn-time approval gate, fenced SPEC-forbidden events).
 **Purpose:** Record the Agent-Native + Builder Skills + omp synthesis for future Commandr agents without reopening the locked L3 bus decisions.
 
 See also: `docs/BUILDERIO-FIT.md` for the concrete fit verdict and action/artifact boundary.
@@ -99,11 +99,11 @@ Integration ladder (updated post-research + post-verification):
 | Level | Shape | Status |
 |---|---|---|
 | 0 | Manual subprocess: `omp -p "<task packet>"` | Smoke test only |
-| 1 | `commandr-omp-runner` wrapper | **Complete (2026-06-20)** — pre-claimed packet contract (`--claimed <path>`), exports `AGENTS_TASK_ID`, calls `PROGRESS_CMD` for neutral milestones, calls `COMPLETE_CMD pass/fail` on exit, policy scan (neutral progress + workspace artifact, no blocking gate), `OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` seams, 13-case smoke test (all pass). Lives at `llm-wiki/commandr-omp-runner/`; relocate to `adapters/omp/` in Commandr before Level 2. |
+| 1 | `commandr-omp-runner` wrapper | **Complete (2026-06-20)** — lives at `adapters/omp/`; pre-claimed packet contract (`--claimed <path>`), exports `AGENTS_TASK_ID`, calls `PROGRESS_CMD` for neutral milestones, calls `COMPLETE_CMD pass/fail` on exit, policy scan (neutral progress + workspace artifact, no blocking gate), `OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` seams, 13-case smoke test (all pass). |
 | 2 | RPC host tools | **Schema designed (non-normative)** — `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`, `commandr_fail` via `omp --mode rpc`. Blocked on RPC mode adoption. |
 | 3 | omp extension/hooks | Future — intercept events directly |
 
-**Level 1 complete (2026-06-20).** `llm-wiki/commandr-omp-runner/runner.sh` rewritten; all acceptance criteria met.
+**Level 1 complete (2026-06-20).** `adapters/omp/runner.sh` is the live runner; all acceptance criteria met.
 
 Level 1 acceptance criteria (all met):
 
@@ -114,7 +114,7 @@ Level 1 acceptance criteria (all met):
 - ☑ Leaves omp private state outside `.agents/` — **workspace is runner-local; bus writes go through PROGRESS_CMD/COMPLETE_CMD only.**
 - ☑ Has deterministic test seam for `omp` command — **`OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` env vars, all default to path-lookup; 13-case smoke test at `test/smoke.sh`, all pass.**
 
-Level 2: RPC host tools (schema in `llm-wiki/commandr-omp-runner/HOST-TOOLS.md` — a design doc, not implemented code).
+Level 2: RPC host tools (schema in `adapters/omp/HOST-TOOLS.md` — a design doc, not implemented code).
 
 Why RPC host tools instead of TypeScript plugins:
 - Language-agnostic: host can be Python, Rust, Go, bash — any JSON-lines process
@@ -122,7 +122,7 @@ Why RPC host tools instead of TypeScript plugins:
 - Real-time: events stream as they happen
 - No TypeScript lock-in
 
-Host tool call schema (5 tools; the runner invokes these, they are runner-local calls — the bus side-effect shape is defined in HOST-TOOLS.md and MUST be reconciled to SPEC §6 `ts`/`event` keys before any emission):
+Host tool call schema (5 tools; the runner invokes these, they are runner-local calls — the bus side-effect shape is defined in HOST-TOOLS.md and uses SPEC §6 `ts`/`event` keys):
 
 ```json
 {"toolName":"commandr_progress","arguments":{"task":"TASK-001","milestone":"LSP diagnostics clean","metadata":{"files_changed":["src/auth.ts"]}}}
@@ -203,7 +203,7 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
 
 1. ~~Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo~~ — DiffViewer V0.7 plan already has action registry.
 2. ~~Add non-normative Commandr mapping table~~ — Done in this doc and `HOST-TOOLS.md`.
-3. **Implement `commandr-omp-runner` Level 1 for real** — the current `runner.sh` is scaffold. To meet the criteria: call `bin/claim` (or accept pre-claimed path + document), export `AGENTS_TASK_ID`, shell to `bin/progress` for neutral `task_progress` (no raw NDJSON transcripts on the bus), shell to `bin/complete` for `task_complete`/`task_failed` + `done/` move (do NOT raw-`mv` bus files), default `$OMP_BIN=omp` and gate it under `set -u`, add at least one smoke test.
+3. ~~Implement `commandr-omp-runner` Level 1 for real~~ — Done in `adapters/omp/runner.sh`; verified by `adapters/omp/test/smoke.sh` (13/13).
 4. Add lazy LSP capability detection to runner metadata or review artifacts, without adding raw LSP state to SPEC.
 5. **Next (after Level 1 is genuinely met):** Level 2 — RPC mode with host tools.
    - Requires `omp --mode rpc` adoption (verify it ships before depending on it; consider a JSON-mode sidecar fallback that parses omp tool-call frames so Level 2 is not single-point-blocked on RPC).
@@ -218,12 +218,8 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
 
 ## Should-Fix TODOs (documented, not blocking)
 
-These are smells found during the 2026-06-19 review, tracked here so they are not lost:
+These are smells tracked here so they are not lost:
 
-- **`runner-policy.yml` placement:** `HOST-TOOLS.md` shows it under `.agents/` — that violates ADAPTER-2 (harness-private state MUST NOT live under `.agents/`). Move it to the workspace or `~/.config/commandr-runner/`.
-- **Host tools must shell to `bin/complete`, not raw-`mv` bus files:** `HOST-TOOLS.md` shows the runner doing `mv .agents/claimed/* .agents/done/` directly, bypassing COMPLETE-1 and the event invariant. The runner must call `bin/complete` so the `task_complete`/`task_failed` event + atomic move + stdout contract hold.
-- **Runner placement:** `llm-wiki/commandr-omp-runner/` is an L2 component living in the L4 knowledge repo, re-creating the double-duty the blueprint said to shed. Acceptable as scratch for the smoke test; once Level 1 is genuinely met, relocate to a dedicated repo, `dotfiles` (L1 adapter home), or `adapters/omp/` inside Commandr.
-- **`HOST-TOOLS.md` event schema:** examples use `"timestamp"`/`"type"` keys; SPEC §6 EVENT-2 mandates `"ts"`/`"event"`. Any implementation following HOST-TOOLS literally would fail C08. Reconcile before any emission.
 - **Non-RPC Level-2 fallback:** Level 2 is single-point-blocked on `omp --mode rpc` shipping. A JSON-mode sidecar fallback de-risks the schedule.
 
 ## Non-Goals

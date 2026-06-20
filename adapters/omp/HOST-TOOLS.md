@@ -250,31 +250,32 @@ policy:
 
 ## Runner-Agnostic Interface
 
-Any L2 runner implementing this schema must expose (corrected 2026-06-19 — the prior table marked Level 1 ✅ on capabilities the current `runner.sh` does NOT have):
+Any L2 runner implementing this schema must expose (updated 2026-06-20 after Level 1 relocation to `adapters/omp/`):
 
 | Capability | Level 1 (current `runner.sh`) | Level 2 (future RPC) |
 |---|---|---|
-| Parse task packet | ✅ (accepts `--task` path / stdin) | ✅ |
-| Claim task (`bin/claim`) | ❌ NOT implemented | ❌ (still the runner's job to call `bin/claim`) |
-| Set `AGENTS_TASK_ID` | ❌ NOT implemented | ✅ |
-| Emit `task_progress` to `events.jsonl` | ❌ NOT implemented (writes raw NDJSON to a side file, not the bus) | ✅ (explicit host tools, via `bin/progress`) |
+| Parse task packet | ✅ (accepts `--claimed <path>` or offline `--task` path / stdin) | ✅ |
+| Claim task (`bin/claim`) | ❌ NOT implemented; caller pre-claims and passes `--claimed` | ❌ (still the orchestrator's job unless this contract changes) |
+| Set `AGENTS_TASK_ID` | ✅ in `--claimed` mode | ✅ |
+| Emit `task_progress` to `events.jsonl` | ✅ via `PROGRESS_CMD` for neutral milestones; raw NDJSON stays in workspace | ✅ (explicit host tools, via `bin/progress`) |
 | Emit `artifact_created` | ❌ NOT implemented; event not in SPEC §6 | ❌ held (SPEC-forbidden until conformance case) |
 | Emit `approval_requested` | ❌ NOT implemented; event not in SPEC §6 | ❌ dropped — emit neutral `task_progress` + artifact ref instead |
 | Block on approval | ❌ | ❌ dropped — no second blocking gate; commit `pre-commit-gate` is the enforceable gate |
-| Handle `commandr_complete`/`commandr_fail` | ❌ NOT implemented (uses runner-local `complete`/`fail`, no `done/` move, no `events.jsonl`) | ✅ (shell to `bin/complete`) |
+| Handle `commandr_complete`/`commandr_fail` | ✅ maps omp exit 0/nonzero to `COMPLETE_CMD <claimed-path> pass/fail` | ✅ (shell to `bin/complete`) |
 
 ---
 
 ## Implementation Path
 
-### Phase 1 (current, incomplete): `--mode json` runner
+### Phase 1 (current, complete): `--mode json` runner
 
-`commandr-omp-runner/runner.sh` is a scaffold — it launches omp and tees NDJSON to a side file + stderr. It does NOT yet integrate with the bus. To meet Level 1:
-- Call `bin/claim` (or document the pre-claimed-path contract) and export `AGENTS_TASK_ID`.
-- Shell to `bin/progress` for neutral `task_progress` (no raw NDJSON transcripts on the bus).
-- Shell to `bin/complete` for `task_complete`/`task_failed` + `done/` move.
-- Parse the policy table (runner-local) and project hits as neutral progress + workspace artifact refs (NOT `approval_requested`).
-- Default `$OMP_BIN=omp`, gate under `set -u`, add a smoke test.
+`adapters/omp/runner.sh` is the Level 1 runner. It:
+- Accepts a pre-claimed packet via `--claimed <path>` (or offline `--task` for smoke/manual runs).
+- Exports `AGENTS_TASK_ID` in bus mode.
+- Shells to `PROGRESS_CMD` for neutral `task_progress` (no raw NDJSON transcripts on the bus).
+- Shells to `COMPLETE_CMD` for `task_complete`/`task_failed` + `done/` move.
+- Parses the runner-local policy table and projects hits as neutral progress + workspace artifact refs (NOT `approval_requested`).
+- Defaults `$OMP_BIN=omp`, gates under `set -u`, and is covered by `adapters/omp/test/smoke.sh` (13/13).
 
 ### Phase 2 (future): `--mode rpc` with explicit host tools
 
