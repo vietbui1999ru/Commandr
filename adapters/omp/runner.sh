@@ -11,18 +11,34 @@
 # emits task_progress milestones, and calls bin/complete on exit.
 #
 # Env var testability seams:
-#   OMP_BIN       omp binary (default: omp)
-#   PROGRESS_CMD  bin/progress (default: progress)
-#   COMPLETE_CMD  bin/complete (default: complete)
+#   OMP_BIN        omp binary (default: omp)
+#   PROGRESS_CMD   bin/progress (default: progress)
+#   COMPLETE_CMD   bin/complete (default: complete)
+#   CHECKPOINT_CMD adapters/lib/checkpoint.sh (default: alongside this script)
 #
 # Bus tools (progress, complete) self-locate via git rev-parse — run from
 # inside the project repo or set CWD before invoking this script.
+#
+# At end of run (the only turn boundary in Level 1 batch mode) the runner
+# projects a work-state milestone through the shared checkpoint core
+# (adapters/lib/checkpoint.sh) — the same canonical projector the Claude Code
+# and OpenCode adapters use, and what conformance C13 exercises. Per-turn
+# checkpointing of a live worktree is a Level 2 concern (RPC frame streaming),
+# since a post-hoc scan only ever sees the final tree. The checkpoint is
+# best-effort: a checkpoint failure never blocks packet finalization.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 OMP_BIN="${OMP_BIN:-omp}"
 PROGRESS_CMD="${PROGRESS_CMD:-progress}"
 COMPLETE_CMD="${COMPLETE_CMD:-complete}"
+CHECKPOINT_CMD="${CHECKPOINT_CMD:-$SCRIPT_DIR/../lib/checkpoint.sh}"
+
+# Repo where omp runs and where the .agents/ bus resolves. Captured before any
+# work; the runner never cd's, but checkpoint.sh needs an explicit dir.
+RUN_DIR="$PWD"
 
 # ─── Parse args ───────────────────────────────────────────────────────────────
 
@@ -121,6 +137,16 @@ bus_progress() {
   fi
 }
 
+# Project one neutral work-state milestone via the shared checkpoint core.
+# Best-effort: checkpoint.sh exits 0 when there is nothing to project (not a
+# repo / no task identity) and non-zero only on a real emit failure — neither
+# may block the packet finalization that follows, so failures are swallowed.
+bus_checkpoint() {
+  if $BUS_MODE && [[ -x "$CHECKPOINT_CMD" ]]; then
+    "$CHECKPOINT_CMD" "$RUN_DIR" || true
+  fi
+}
+
 # ─── Policy table (runner-local; no blocking gate) ────────────────────────────
 
 # The commit-time pre-commit-gate is the single enforceable human gate (SPEC §7).
@@ -182,6 +208,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$WORKSPACE_DIR/omp.stdout"
 
 # ─── Finalize ─────────────────────────────────────────────────────────────────
+
+# Work-state milestone (post-run worktree); complements the lifecycle bookends.
+bus_checkpoint
 
 if [[ "$OMP_EXIT" -eq 0 ]]; then
   bus_progress "omp complete"

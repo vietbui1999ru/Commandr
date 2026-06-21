@@ -161,6 +161,83 @@ bash "$RUNNER" --claimed "$bad_packet" --workspace "$TMP/workspace" 2>/dev/null 
 [[ $ec -ne 0 ]] && ok "T5: rejects missing id" || fail "T5: rejects missing id"
 teardown
 
+# ─── Test 6: real bus integration — real bin/claim, progress, complete ───────
+#
+# T1–T5 mock the bus tools, so they never exercise the real bin/complete path
+# guard (it rejects any packet not under */.agents/claimed) or the real
+# events.jsonl shape. T6 drives the runner against a real throwaway git repo +
+# real .agents/ bus using Commandr's actual bin tools and the shared
+# checkpoint core. Only omp itself is mocked (and made to mutate the worktree
+# so the checkpoint reports an uncommitted file).
+
+COMMANDR_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+REAL_CLAIM="$COMMANDR_ROOT/bin/claim"
+REAL_PROGRESS="$COMMANDR_ROOT/bin/progress"
+REAL_COMPLETE="$COMMANDR_ROOT/bin/complete"
+REAL_CHECKPOINT="$COMMANDR_ROOT/adapters/lib/checkpoint.sh"
+
+if [[ -x "$REAL_CLAIM" && -x "$REAL_PROGRESS" && -x "$REAL_COMPLETE" && -x "$REAL_CHECKPOINT" ]]; then
+  PROJ="$(mktemp -d)"
+  (
+    cd "$PROJ" || exit 1
+    git init -q
+    git config user.email t@example.com; git config user.name t
+    git commit -q --allow-empty -m init
+    mkdir -p .agents/inbox .agents/claimed .agents/done
+    : > .agents/events.jsonl
+    cat > .agents/inbox/TASK-INT.md << 'PKT'
+---
+id: TASK-INT
+type: implementation
+scope: src/
+---
+## Context
+Real-bus integration test packet.
+## Acceptance criteria
+- [ ] done
+## Files to touch
+src/app.txt
+## Do not touch
+.agents/
+PKT
+    # Mock omp that mutates the worktree so checkpoint sees uncommitted work.
+    mkdir -p binmock
+    cat > binmock/omp << 'MOCK'
+#!/usr/bin/env bash
+printf 'work\n' > app.txt
+exit 0
+MOCK
+    chmod +x binmock/omp
+
+    # Real claim: inbox -> claimed; prints "claimed:<abs-path>" then the body.
+    claimed="$("$REAL_CLAIM" 2>/dev/null | sed -n '1s/^claimed://p')"
+    [[ -f "$claimed" ]] || { printf 'NOCLAIM\n' > "$PROJ/ec"; exit 0; }
+
+    OMP_BIN="$PROJ/binmock/omp" \
+    PROGRESS_CMD="$REAL_PROGRESS" \
+    COMPLETE_CMD="$REAL_COMPLETE" \
+    CHECKPOINT_CMD="$REAL_CHECKPOINT" \
+      bash "$RUNNER" --claimed "$claimed" --workspace "$PROJ/ws" >/dev/null 2>&1
+    printf '%s\n' "$?" > "$PROJ/ec"
+  )
+  ec="$(cat "$PROJ/ec" 2>/dev/null || echo 99)"
+  ev="$PROJ/.agents/events.jsonl"
+
+  [[ "$ec" == "0" ]] \
+    && ok "T6: runner exits 0 (real bus)" || fail "T6: runner exits 0 (real bus, ec=$ec)"
+  ls "$PROJ"/.agents/done/*TASK-INT* >/dev/null 2>&1 \
+    && ok "T6: packet moved to done/ (real complete)" || fail "T6: packet moved to done/ (real complete)"
+  [[ -z "$(ls -A "$PROJ"/.agents/claimed 2>/dev/null)" ]] \
+    && ok "T6: claimed/ drained" || fail "T6: claimed/ drained"
+  grep -q 'checkpoint:' "$ev" 2>/dev/null \
+    && ok "T6: checkpoint milestone on real bus" || fail "T6: checkpoint milestone on real bus"
+  grep -q 'task_complete' "$ev" 2>/dev/null \
+    && ok "T6: task_complete event on real bus" || fail "T6: task_complete event on real bus"
+  rm -rf "$PROJ"
+else
+  fail "T6: real bus tools not found at $COMMANDR_ROOT/bin"
+fi
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

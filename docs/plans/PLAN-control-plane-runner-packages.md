@@ -1,6 +1,6 @@
 # Plan: Control-Plane Runner and Skill Packages
 
-**Status:** Level 1 = bus-integrated omp subprocess wrapper live in `adapters/omp/` with 13/13 smoke passing. Level 2 = schema designed, unimplemented, blocked on `omp --mode rpc` adoption. **Non-normative:** `approval_requested`, `artifact_created`, `.agents/approvals/<task>.pending`, `.denied`, and `workspaces/` are NOT in SPEC v0.3 and MUST NOT be emitted/written until added via a conformance-backed SPEC change.
+**Status:** Level 1 = bus-integrated omp subprocess wrapper live in `adapters/omp/`, conformance-gated via `adapters/omp/conformance-driver.sh` (C13 `--adapter` mode, 28/0/0) and covered by 18/18 smoke incl. a real-bus integration case. Level 2 = schema designed, unimplemented, blocked on `omp --mode rpc` adoption. **Non-normative:** `approval_requested`, `artifact_created`, `.agents/approvals/<task>.pending`, `.denied`, and `workspaces/` are NOT in SPEC v0.3 and MUST NOT be emitted/written until added via a conformance-backed SPEC change.
 **Date:** 2026-06-20 (Level 1 relocated into Commandr; prior 2026-06-19 revision corrected false completion claims, dropped the blocking turn-time approval gate, fenced SPEC-forbidden events).
 **Purpose:** Record the Agent-Native + Builder Skills + omp synthesis for future Commandr agents without reopening the locked L3 bus decisions.
 
@@ -99,7 +99,7 @@ Integration ladder (updated post-research + post-verification):
 | Level | Shape | Status |
 |---|---|---|
 | 0 | Manual subprocess: `omp -p "<task packet>"` | Smoke test only |
-| 1 | `commandr-omp-runner` wrapper | **Complete (2026-06-20)** — lives at `adapters/omp/`; pre-claimed packet contract (`--claimed <path>`), exports `AGENTS_TASK_ID`, calls `PROGRESS_CMD` for neutral milestones, calls `COMPLETE_CMD pass/fail` on exit, policy scan (neutral progress + workspace artifact, no blocking gate), `OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` seams, 13-case smoke test (all pass). |
+| 1 | `commandr-omp-runner` wrapper | **Complete + conformance-gated (2026-06-20)** — lives at `adapters/omp/`; pre-claimed packet contract (`--claimed <path>`), exports `AGENTS_TASK_ID`, calls `PROGRESS_CMD` for neutral milestones, projects an end-of-run work-state milestone through the shared `adapters/lib/checkpoint.sh` (`CHECKPOINT_CMD` seam), calls `COMPLETE_CMD pass/fail` on exit, policy scan (neutral progress + workspace artifact, no blocking gate), `OMP_BIN/PROGRESS_CMD/COMPLETE_CMD/CHECKPOINT_CMD` seams, 18-case smoke (incl. real-bus integration). Wired into the adapter conformance contract via `adapters/omp/conformance-driver.sh` — passes C13 in `--adapter` mode (28/0/0), advertising `turn-end`+`session-end`. |
 | 2 | RPC host tools | **Schema designed (non-normative)** — `commandr_progress`, `commandr_request_approval`, `commandr_emit_artifact`, `commandr_complete`, `commandr_fail` via `omp --mode rpc`. Blocked on RPC mode adoption. |
 | 3 | omp extension/hooks | Future — intercept events directly |
 
@@ -112,7 +112,7 @@ Level 1 acceptance criteria (all met):
 - ☑ Appends neutral `task_progress` milestones via `PROGRESS_CMD`; no tool-call transcripts on the bus — **3 milestones: started, policy hit (if any), complete/failed.**
 - ☑ Maps normal success to `task_complete` and abnormal failure to `task_failed` — **via `$COMPLETE_CMD <path> pass/fail`.**
 - ☑ Leaves omp private state outside `.agents/` — **workspace is runner-local; bus writes go through PROGRESS_CMD/COMPLETE_CMD only.**
-- ☑ Has deterministic test seam for `omp` command — **`OMP_BIN/PROGRESS_CMD/COMPLETE_CMD` env vars, all default to path-lookup; 13-case smoke test at `test/smoke.sh`, all pass.**
+- ☑ Has deterministic test seam for `omp` command — **`OMP_BIN/PROGRESS_CMD/COMPLETE_CMD/CHECKPOINT_CMD` env vars, all default to path-lookup; 18-case smoke at `test/smoke.sh` (incl. T6 real-bus integration against the actual `bin/claim`/`bin/progress`/`bin/complete`), all pass.**
 
 Level 2: RPC host tools (schema in `adapters/omp/HOST-TOOLS.md` — a design doc, not implemented code).
 
@@ -203,7 +203,7 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
 
 1. ~~Draft `docs/COCKPIT-ACTIONS.md` in DiffViewer/Tauri repo~~ — DiffViewer V0.7 plan already has action registry.
 2. ~~Add non-normative Commandr mapping table~~ — Done in this doc and `HOST-TOOLS.md`.
-3. ~~Implement `commandr-omp-runner` Level 1 for real~~ — Done in `adapters/omp/runner.sh`; verified by `adapters/omp/test/smoke.sh` (13/13).
+3. ~~Implement `commandr-omp-runner` Level 1 for real~~ — Done in `adapters/omp/runner.sh`; verified by `adapters/omp/test/smoke.sh` (18/18, incl. real-bus integration) and the adapter conformance driver.
 4. Add lazy LSP capability detection to runner metadata or review artifacts, without adding raw LSP state to SPEC.
 5. **Next (after Level 1 is genuinely met):** Level 2 — RPC mode with host tools.
    - Requires `omp --mode rpc` adoption (verify it ships before depending on it; consider a JSON-mode sidecar fallback that parses omp tool-call frames so Level 2 is not single-point-blocked on RPC).
@@ -211,7 +211,7 @@ Do not add a generic `.agents/steer/` queue without a conformance-backed consume
    - Handle `host_tool_call` frames.
    - Implement the runner-local policy table; project hits as neutral progress + artifact refs (NOT `approval_requested` events, NOT a blocking gate).
    - Test with actual task packets.
-6. Add adapter/conformance coverage for runner lifecycle if it becomes a supported Commandr command.
+6. ~~Add adapter/conformance coverage for runner lifecycle~~ — Done: `adapters/omp/conformance-driver.sh` drives the omp adapter through C13 in `--adapter` mode (`turn-end`→`checkpoint.sh`, `session-end`→`session-end.sh`), passing 28/0/0. NOTE: this gates the adapter's neutral-lifecycle bus contract via the shared cores; per-turn worktree checkpointing from `runner.sh` itself (vs. the single end-of-run checkpoint) remains a Level 2 RPC concern.
 7. Only then design omp extensions/hooks and any new SPEC event types (`approval_requested`/`artifact_created` need SPEC §6 + §11 divergence + conformance cases BEFORE any emission).
 
 ---
